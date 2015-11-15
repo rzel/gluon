@@ -11,14 +11,14 @@ use std::string::String as StdString;
 use base::ast;
 use base::ast::{Type, ASTType};
 use check::typecheck::{Typecheck, TypeEnv, TypeInfos, TcIdent, TcType};
-use check::macros::{MacroEnv, MacroExpander};
+use check::macros::{MacroEnv, MacroExpander, Macro};
 use check::Typed;
 use types::*;
 use base::fixed::{FixedMap, FixedVec};
 use base::interner::{Interner, InternedStr};
 use base::gc::{Gc, GcPtr, Traverseable, DataDef, Move, WriteOnly};
 use compiler::{Compiler, CompiledFunction, Variable, CompilerEnv};
-use api::{primitive, Pushable, IO};
+use api::{primitive, VMType, Pushable, IO};
 use lazy::Lazy;
 
 use self::Named::*;
@@ -635,7 +635,8 @@ impl <'a> VM<'a> {
             .unwrap();
         vm.add_primitives()
             .unwrap();
-        vm.macros.insert(vm.intern("import"), ::import::Import::new());
+        vm.set_macro(vm.intern("import"), ::import::Import::new());
+        vm.set_macro(vm.intern("def_macro"), ::def_macro::DefMacro);
         vm
     }
 
@@ -753,6 +754,11 @@ impl <'a> VM<'a> {
             .pop()
     }
 
+    pub fn set_macro<M>(&self, id: InternedStr, mac: M)
+    where M: Macro<VM<'a>> + 'static {
+        self.macros.insert(id, mac);
+    }
+
     pub fn new_function(&self, f: CompiledFunction) -> GcPtr<BytecodeFunction> {
         BytecodeFunction::new(&mut self.gc.borrow_mut(), f)
     }
@@ -762,10 +768,9 @@ impl <'a> VM<'a> {
         self.globals.find(|g| n == g.id).map(|tup| tup.1)
     }
 
-    pub fn get_type<T: ?Sized + Any>(&self) -> &TcType {
+    pub fn get_type<T: ?Sized + Any>(&self) -> Option<&TcType> {
         let id = TypeId::of::<T>();
         self.typeids.get(&id)
-            .unwrap_or_else(|| panic!("Expected type to be inserted before get_type call"))
     }
 
     pub fn run_function(&self, cf: &Global<'a>) -> VMResult<Value<'a>> {
@@ -920,7 +925,7 @@ impl <'a> VM<'a> {
     pub fn new_data_and_collect(&self, stack: &mut [Value<'a>], tag: VMTag, fields: &mut [Value<'a>]) -> GcPtr<DataStruct<'a>> {
        self.alloc(stack, Def { tag: tag, elems: fields })
     }
-    fn new_closure(&self, func: GcPtr<BytecodeFunction>, fields: &[Value<'a>]) -> GcPtr<ClosureData<'a>> {
+    pub fn new_closure(&self, func: GcPtr<BytecodeFunction>, fields: &[Value<'a>]) -> GcPtr<ClosureData<'a>> {
         self.gc.borrow_mut().alloc(ClosureDataDef(func, fields))
     }
     fn new_closure_and_collect(&self, stack: &mut [Value<'a>], func: GcPtr<BytecodeFunction>, fields: &[Value<'a>]) -> GcPtr<ClosureData<'a>> {
@@ -1399,14 +1404,9 @@ fn macro_expand(vm: &VM, expr: &mut ast::LExpr<TcIdent>) -> Result<(), Box<StdEr
 
 pub fn load_script(vm: &VM, name: &str, input: &str) -> Result<(), Box<StdError>> {
     let (type_infos, function, typ) = {
-        let (expr, typ, type_infos) = try!(typecheck_expr(vm, input));
-        let mut function = {
-            let env = (vm.env(), &type_infos);
-            let mut interner = vm.interner.borrow_mut();
-            let mut gc = vm.gc.borrow_mut();
-            let mut compiler = Compiler::new(&env, &mut interner, &mut gc);
-            compiler.compile_expr(&expr)
-        };
+        let expr = try!(parse_expr(input, vm));
+        let (expr, typ, type_infos) = try!(typecheck_expr(vm, expr));
+        let mut function = compile_expr(vm, &type_infos, expr);
         function.id = vm.interner.borrow_mut().intern(&mut vm.gc.borrow_mut(), name);
         (type_infos, function, typ)
     };
@@ -1438,26 +1438,35 @@ pub fn parse_expr(input: &str, vm: &VM) -> Result<ast::LExpr<TcIdent>, Box<StdEr
     let mut gc = vm.gc.borrow_mut();
     Ok(try!(::parser::parse_tc(&mut gc, &mut interner, input)))
 }
-pub fn typecheck_expr<'a>(vm: &VM<'a>, expr_str: &str) -> Result<(ast::LExpr<TcIdent>, TcType, TypeInfos), Box<StdError>> {
-    let mut expr = try!(parse_expr(&expr_str, vm));
+
+pub fn typecheck_expr<'a>(vm: &VM<'a>, expr: ast::LExpr<TcIdent>) -> Result<(ast::LExpr<TcIdent>, TcType, TypeInfos), Box<StdError>> {
+    typecheck_expr_to(vm, expr, None)
+}
+
+pub fn typecheck_expr_to<'a>(vm: &VM<'a>, mut expr: ast::LExpr<TcIdent>, expected: Option<TcType>) -> Result<(ast::LExpr<TcIdent>, TcType, TypeInfos), Box<StdError>> {
     try!(macro_expand(vm, &mut expr));
     let env = vm.env();
     let mut interner = vm.interner.borrow_mut();
     let mut gc = vm.gc.borrow_mut();
     let mut tc = Typecheck::new(&mut interner, &mut gc);
     tc.add_environment(&env);
-    let typ = try!(tc.typecheck_expr(&mut expr));
+    let typ = try!(tc.typecheck_expr_to(&mut expr, expected));
     Ok((expr, typ, tc.type_infos))
+}
+
+pub fn compile_expr<'a>(vm: &VM<'a>, type_infos: &TypeInfos, expr: ast::LExpr<TcIdent>) -> CompiledFunction {
+    let env = (vm.env(), type_infos);
+    let mut interner = vm.interner.borrow_mut();
+    let mut gc = vm.gc.borrow_mut();
+    let mut compiler = Compiler::new(&env, &mut interner, &mut gc);
+    compiler.compile_expr(&expr)
 }
 
 pub fn run_expr<'a>(vm: &VM<'a>, expr_str: &str) -> Result<Value<'a>, Box<StdError>> {
     let mut function = {
-        let (expr, _, type_infos) = try!(typecheck_expr(vm, expr_str));
-        let env = (vm.env(), &type_infos);
-        let mut interner = vm.interner.borrow_mut();
-        let mut gc = vm.gc.borrow_mut();
-        let mut compiler = Compiler::new(&env, &mut interner, &mut gc);
-        compiler.compile_expr(&expr)
+        let expr = try!(parse_expr(expr_str, vm));
+        let (expr, _, type_infos) = try!(typecheck_expr(vm, expr));
+        compile_expr(vm, &type_infos, expr)
     };
     function.id = vm.interner.borrow_mut().intern(&mut vm.gc.borrow_mut(), "<top>");
     let typ = function.typ.clone();

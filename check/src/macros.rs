@@ -73,7 +73,11 @@ impl <'a, Env> MutVisitor for MacroExpander<'a, Env> {
             ast::Expr::Call(ref mut id, ref mut args) => {
                 match ***id {
                     ast::Expr::Identifier(ref id) => {
-                        match self.macros.macros.borrow().get(&id.name).cloned() {
+                        let opt = {
+                            let macros = self.macros.macros.borrow();
+                            macros.get(&id.name).cloned()
+                        };
+                        match opt {
                             Some(m) => {
                                 match m.expand(self.env, args) {
                                     Ok(e) => Some(e),

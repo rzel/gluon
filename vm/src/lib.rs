@@ -16,4 +16,5 @@ mod stack;
 mod primitives;
 mod lazy;
 mod import;
+mod def_macro;
 

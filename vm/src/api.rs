@@ -199,6 +199,14 @@ impl <'a> Pushable<'a> for String {
 impl <T: VMType> VMType for Box<T> {
     type Type = T::Type;
 }
+impl <'a, 'vm, T: Any + VMType + Clone> Getable<'a, 'vm> for Box<T> {
+    fn from_value(_: &'vm VM<'a>, value: Value<'a>) -> Option<Box<T>> {
+        match value {
+            Value::Userdata(v) => v.data.downcast_ref().cloned(),
+            _ => None
+        }
+    }
+}
 impl <'a, T: Any + VMType> Pushable<'a> for Box<T> {
     fn push<'b>(self, vm: &VM<'a>, stack: &mut StackFrame<'a, 'b>) -> Status {
         stack.push(Value::Userdata(Userdata_::new(vm, self)));
@@ -592,6 +600,7 @@ impl <'a: 'vm, 'vm, F: FunctionType + VMType> Pushable<'a> for Primitive<F> {
 
 fn vm_type<'a, T: ?Sized + VMType>(vm: &'a VM) -> &'a Type<InternedStr> {
     vm.get_type::<T::Type>()
+        .unwrap_or_else(|| panic!("Expected type to be inserted before get_type call"))
 }
 
 fn make_type<T: ?Sized + VMType>(vm: &VM) -> TcType {

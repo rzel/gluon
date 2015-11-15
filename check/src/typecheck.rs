@@ -320,6 +320,10 @@ impl <'a> Typecheck<'a> {
     }
 
     pub fn typecheck_expr(&mut self, expr: &mut ast::LExpr<TcIdent>) -> Result<TcType, StringErrors> {
+        self.typecheck_expr_to(expr, None)
+    }
+
+    pub fn typecheck_expr_to(&mut self, expr: &mut ast::LExpr<TcIdent>, expected: Option<TcType>) -> Result<TcType, StringErrors> {
         self.subs.clear();
         self.stack.clear();
 
@@ -330,6 +334,15 @@ impl <'a> Typecheck<'a> {
                 return Err(mem::replace(&mut self.errors, Errors::new()));
             }
         };
+        if let Some(expected) = expected {
+            typ = match self.unify(&expected, typ) {
+                Ok(typ) => typ,
+                Err(err) => {
+                    self.errors.error(ast::Located { location: expr.location, value: err });
+                    expected
+                }
+            };
+        }
         if self.errors.has_errors() {
             Err(mem::replace(&mut self.errors, Errors::new()))
         }

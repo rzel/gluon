@@ -1,12 +1,12 @@
 use std::error::Error as StdError;
 use check::typecheck::TypeEnv;
 use check::Typed;
-use vm::vm::{VM, RootStr, Status, typecheck_expr, load_file};
+use vm::vm::{VM, RootStr, Status, parse_expr, typecheck_expr, load_file};
 use vm::api::{VMFunction, IO, primitive};
 
 fn type_of_expr(vm: &VM) -> Status {
     let closure: &Fn(_) -> _ = &|args: RootStr| -> IO<String> {
-        IO::Value(match typecheck_expr(vm, &args) {
+        IO::Value(match parse_expr(&args, vm).and_then(|expr| typecheck_expr(vm, expr)) {
             Ok((expr, _, infos)) => {
                 let ref env = (vm.env(), infos);
                 format!("{}", expr.env_type_of(env))
