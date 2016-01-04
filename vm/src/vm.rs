@@ -17,7 +17,7 @@ use check::Typed;
 use types::*;
 use base::fixed::{FixedMap, FixedVec};
 use interner::{Interner, InternedStr};
-use gc::{Gc, GcPtr, Traverseable, DataDef, Move, WriteOnly};
+use gc::{Gc, TypedGc, GcAllocator, GcPtr, GcTraverseable, Traverseable, DataDef, Move, WriteOnly};
 use array::{Array, Str};
 use compiler::{Compiler, CompiledFunction, Variable, CompilerEnv};
 use api::Pushable;
@@ -64,16 +64,16 @@ impl<'a> PartialEq for ClosureData<'a> {
     }
 }
 
-impl<'a> Traverseable for ClosureData<'a> {
-    fn traverse(&self, gc: &mut Gc) {
+impl<'a, G> Traverseable<G> for ClosureData<'a> {
+    fn traverse(&self, gc: &mut G) {
         self.function.traverse(gc);
         self.upvars.traverse(gc);
     }
 }
 
 struct ClosureDataDef<'a: 'b, 'b>(GcPtr<BytecodeFunction>, &'b [Value<'a>]);
-impl<'a, 'b> Traverseable for ClosureDataDef<'a, 'b> {
-    fn traverse(&self, gc: &mut Gc) {
+impl<'a, 'b, G> Traverseable<G> for ClosureDataDef<'a, 'b> {
+    fn traverse(&self, gc: &mut G) {
         self.0.traverse(gc);
         self.1.traverse(gc);
     }
@@ -115,7 +115,7 @@ impl BytecodeFunction {
         }
     }
 
-    pub fn new(gc: &mut Gc, f: CompiledFunction) -> GcPtr<BytecodeFunction> {
+    pub fn new(gc: &mut VMGc, f: CompiledFunction) -> GcPtr<BytecodeFunction> {
         let CompiledFunction { id, args, instructions, inner_functions, strings, .. } = f;
         let fs = inner_functions.into_iter()
                                 .map(|inner| BytecodeFunction::new(gc, inner))
@@ -130,19 +130,20 @@ impl BytecodeFunction {
     }
 }
 
-impl Traverseable for BytecodeFunction {
-    fn traverse(&self, gc: &mut Gc) {
+impl<G> Traverseable<G> for BytecodeFunction {
+    fn traverse(&self, gc: &mut G) {
         self.inner_functions.traverse(gc);
     }
 }
 
+#[derive(Debug)]
 pub struct DataStruct<'a> {
     pub tag: VMTag,
     pub fields: Array<Cell<Value<'a>>>,
 }
 
-impl<'a> Traverseable for DataStruct<'a> {
-    fn traverse(&self, gc: &mut Gc) {
+impl<'a, G> Traverseable<G> for DataStruct<'a> {
+    fn traverse(&self, gc: &mut G) {
         self.fields.traverse(gc);
     }
 }
@@ -190,8 +191,8 @@ impl<'a> PartialEq for Callable<'a> {
     }
 }
 
-impl<'a> Traverseable for Callable<'a> {
-    fn traverse(&self, gc: &mut Gc) {
+impl<'a, G> Traverseable<G> for Callable<'a> {
+    fn traverse(&self, gc: &mut G) {
         match *self {
             Callable::Closure(ref closure) => closure.traverse(gc),
             Callable::Extern(_) => (),
@@ -211,16 +212,16 @@ impl<'a> PartialEq for PartialApplicationData<'a> {
     }
 }
 
-impl<'a> Traverseable for PartialApplicationData<'a> {
-    fn traverse(&self, gc: &mut Gc) {
+impl<'a, G> Traverseable<G> for PartialApplicationData<'a> {
+    fn traverse(&self, gc: &mut G) {
         self.function.traverse(gc);
         self.arguments.traverse(gc);
     }
 }
 
 struct PartialApplicationDataDef<'a: 'b, 'b>(Callable<'a>, &'b [Value<'a>]);
-impl<'a, 'b> Traverseable for PartialApplicationDataDef<'a, 'b> {
-    fn traverse(&self, gc: &mut Gc) {
+impl<'a, 'b, G> Traverseable<G> for PartialApplicationDataDef<'a, 'b> {
+    fn traverse(&self, gc: &mut G) {
         self.0.traverse(gc);
         self.1.traverse(gc);
     }
@@ -254,8 +255,8 @@ impl<'a> PartialEq<Cell<Value<'a>>> for Value<'a> {
     }
 }
 
-impl<'a> Traverseable for Value<'a> {
-    fn traverse(&self, gc: &mut Gc) {
+impl<'a, G> Traverseable<G> for Value<'a> {
+    fn traverse(&self, gc: &mut G) {
         match *self {
             String(ref data) => data.traverse(gc),
             Data(ref data) => data.traverse(gc),
@@ -370,28 +371,28 @@ impl<'a, 'vm> RootedValue<'a, 'vm> {
     }
 }
 
-pub struct Root<'a, T: ?Sized + 'a> {
-    roots: &'a RefCell<Vec<GcPtr<Traverseable + 'static>>>,
+pub struct Root<'vm, 'a: 'vm, T: ?Sized + 'a> {
+    roots: &'vm RefCell<Vec<GcPtr<GcTraverseable<VMGc<'a>> + 'static>>>,
     ptr: *const T,
 }
 
-impl<'a, T: ?Sized> Drop for Root<'a, T> {
+impl<'vm, 'a, T: ?Sized> Drop for Root<'vm, 'a, T> {
     fn drop(&mut self) {
         // TODO not safe if the root changes order of being dropped with another root
         self.roots.borrow_mut().pop();
     }
 }
 
-impl<'a, T: ?Sized> Deref for Root<'a, T> {
+impl<'vm, 'a, T: ?Sized> Deref for Root<'vm, 'a, T> {
     type Target = T;
     fn deref(&self) -> &T {
         unsafe { &*self.ptr }
     }
 }
 
-pub struct RootStr<'a>(Root<'a, Str>);
+pub struct RootStr<'vm, 'a: 'vm>(Root<'vm, 'a, Str>);
 
-impl<'a> Deref for RootStr<'a> {
+impl<'vm, 'a> Deref for RootStr<'vm, 'a> {
     type Target = str;
     fn deref(&self) -> &str {
         &self.0
@@ -424,8 +425,8 @@ impl<'a> fmt::Debug for ExternFunction<'a> {
     }
 }
 
-impl<'a> Traverseable for ExternFunction<'a> {
-    fn traverse(&self, _: &mut Gc) {}
+impl<'a, G> Traverseable<G> for ExternFunction<'a> {
+    fn traverse(&self, _: &mut G) {}
 }
 
 #[derive(Debug)]
@@ -435,8 +436,8 @@ pub struct Global<'a> {
     pub value: Cell<Value<'a>>,
 }
 
-impl<'a> Traverseable for Global<'a> {
-    fn traverse(&self, gc: &mut Gc) {
+impl<'a, G> Traverseable<G> for Global<'a> {
+    fn traverse(&self, gc: &mut G) {
         self.value.traverse(gc);
     }
 }
@@ -445,6 +446,133 @@ impl<'a> Typed for Global<'a> {
     type Id = Symbol;
     fn env_type_of(&self, _: &TypeEnv) -> ASTType<Symbol> {
         self.typ.clone()
+    }
+}
+
+#[derive(Debug)]
+pub struct VMGc<'a> {
+    allocated_memory: usize,
+    collect_limit: usize,
+    pub str_gc: TypedGc<Str>,
+    pub data_gc: TypedGc<DataStruct<'a>>,
+    pub function_gc: TypedGc<ExternFunction<'a>>,
+    pub closure_gc: TypedGc<ClosureData<'a>>,
+    pub partial_gc: TypedGc<PartialApplicationData<'a>>,
+    pub box_gc: TypedGc<Box<Any>>,
+    pub lazy_gc: TypedGc<Lazy<'a, Value<'a>>>,
+    pub bytecode_gc: TypedGc<BytecodeFunction>,
+}
+
+impl<'a> VMGc<'a> {
+    pub fn new() -> VMGc<'a> {
+        VMGc {
+            allocated_memory: 0,
+            collect_limit: 100,
+            str_gc: TypedGc::new(),
+            data_gc: TypedGc::new(),
+            function_gc: TypedGc::new(),
+            closure_gc: TypedGc::new(),
+            partial_gc: TypedGc::new(),
+            box_gc: TypedGc::new(),
+            lazy_gc: TypedGc::new(),
+            bytecode_gc: TypedGc::new(),
+        }
+    }
+}
+
+impl<'a> Gc for VMGc<'a> {
+    unsafe fn alloc_and_collect<R, D>(&mut self, roots: R, mut def: D) -> GcPtr<D::Value>
+        where R: Traverseable<Self>,
+              D: DataDef + Traverseable<Self>,
+              Self: GcAllocator<D::Value>
+    {
+        self.allocated_memory += def.size();
+        if self.allocated_memory >= self.collect_limit {
+            self.collect((roots, &mut def));
+        }
+        self.alloc(def)
+    }
+
+    unsafe fn collect<R>(&mut self, roots: R)
+        where R: Traverseable<Self>
+    {
+        debug!("Start collect");
+        roots.traverse(self);
+
+        self.str_gc.sweep();
+        self.data_gc.sweep();
+        self.function_gc.sweep();
+        self.closure_gc.sweep();
+        self.partial_gc.sweep();
+        self.box_gc.sweep();
+        self.lazy_gc.sweep();
+        self.bytecode_gc.sweep();
+
+        self.collect_limit = 2 * self.allocated_memory;
+    }
+}
+
+impl<'a> GcAllocator<Str> for VMGc<'a> {
+    fn alloc<D>(&mut self, def: D) -> GcPtr<D::Value>
+        where D: DataDef<Value = Str>
+    {
+        self.str_gc.alloc(def)
+    }
+}
+
+impl<'a> GcAllocator<DataStruct<'a>> for VMGc<'a> {
+    fn alloc<D>(&mut self, def: D) -> GcPtr<D::Value>
+        where D: DataDef<Value = DataStruct<'a>>
+    {
+        self.data_gc.alloc(def)
+    }
+}
+
+impl<'a> GcAllocator<ClosureData<'a>> for VMGc<'a> {
+    fn alloc<D>(&mut self, def: D) -> GcPtr<D::Value>
+        where D: DataDef<Value = ClosureData<'a>>
+    {
+        self.closure_gc.alloc(def)
+    }
+}
+
+impl<'a> GcAllocator<PartialApplicationData<'a>> for VMGc<'a> {
+    fn alloc<D>(&mut self, def: D) -> GcPtr<D::Value>
+        where D: DataDef<Value = PartialApplicationData<'a>>
+    {
+        self.partial_gc.alloc(def)
+    }
+}
+
+impl<'a> GcAllocator<ExternFunction<'a>> for VMGc<'a> {
+    fn alloc<D>(&mut self, def: D) -> GcPtr<D::Value>
+        where D: DataDef<Value = ExternFunction<'a>>
+    {
+        self.function_gc.alloc(def)
+    }
+}
+
+impl<'a> GcAllocator<Lazy<'a, Value<'a>>> for VMGc<'a> {
+    fn alloc<D>(&mut self, def: D) -> GcPtr<D::Value>
+        where D: DataDef<Value = Lazy<'a, Value<'a>>>
+    {
+        self.lazy_gc.alloc(def)
+    }
+}
+
+impl<'a> GcAllocator<Box<Any>> for VMGc<'a> {
+    fn alloc<D>(&mut self, def: D) -> GcPtr<D::Value>
+        where D: DataDef<Value = Box<Any>>
+    {
+        self.box_gc.alloc(def)
+    }
+}
+
+impl<'a> GcAllocator<BytecodeFunction> for VMGc<'a> {
+    fn alloc<D>(&mut self, def: D) -> GcPtr<D::Value>
+        where D: DataDef<Value = BytecodeFunction>
+    {
+        self.bytecode_gc.alloc(def)
     }
 }
 
@@ -460,8 +588,8 @@ pub struct VM<'a> {
     pub interner: RefCell<Interner>,
     symbols: RefCell<Symbols>,
     names: RefCell<HashMap<Symbol, Named>>,
-    pub gc: RefCell<Gc>,
-    roots: RefCell<Vec<GcPtr<Traverseable>>>,
+    pub gc: RefCell<VMGc<'a>>,
+    roots: RefCell<Vec<GcPtr<GcTraverseable<VMGc<'a>>>>>,
     rooted_values: RefCell<Vec<Value<'a>>>,
     pub stack: RefCell<Stack<'a>>,
     macros: MacroEnv<VM<'a>>,
@@ -591,21 +719,21 @@ unsafe impl<'a, 'b> DataDef for Def<'a, 'b> {
     }
 }
 
-impl<'a, 'b> Traverseable for Def<'a, 'b> {
-    fn traverse(&self, gc: &mut Gc) {
+impl<'a, 'b, G> Traverseable<G> for Def<'a, 'b> {
+    fn traverse(&self, gc: &mut G) {
         self.elems.traverse(gc);
     }
 }
 
-struct Roots<'a: 'b, 'b> {
+struct Roots<'a: 'b, 'b, G: 'a> {
     globals: &'b FixedVec<Global<'a>>,
     stack: &'b Stack<'a>,
     interner: &'b mut Interner,
-    roots: Ref<'b, Vec<GcPtr<Traverseable>>>,
+    roots: Ref<'b, Vec<GcPtr<GcTraverseable<G>>>>,
     rooted_values: Ref<'b, Vec<Value<'a>>>,
 }
-impl<'a, 'b> Traverseable for Roots<'a, 'b> {
-    fn traverse(&self, gc: &mut Gc) {
+impl<'a, 'b, G> Traverseable<G> for Roots<'a, 'b, G> {
+    fn traverse(&self, gc: &mut G) {
         for g in self.globals.borrow().iter() {
             g.traverse(gc);
         }
@@ -626,7 +754,7 @@ impl<'a> VM<'a> {
             symbols: RefCell::new(Symbols::new()),
             interner: RefCell::new(Interner::new()),
             names: RefCell::new(HashMap::new()),
-            gc: RefCell::new(Gc::new()),
+            gc: RefCell::new(VMGc::new()),
             stack: RefCell::new(Stack::new()),
             roots: RefCell::new(Vec::new()),
             rooted_values: RefCell::new(Vec::new()),
@@ -874,7 +1002,7 @@ impl<'a> VM<'a> {
         })
     }
 
-    pub fn root<T: Any>(&self, v: GcPtr<Box<Any>>) -> Option<Root<T>> {
+    pub fn root<'vm, T: Any>(&'vm self, v: GcPtr<Box<Any>>) -> Option<Root<'vm, 'a, T>> {
         match v.downcast_ref::<T>().or_else(|| v.downcast_ref::<Box<T>>().map(|p| &**p)) {
             Some(ptr) => {
                 self.roots.borrow_mut().push(v.as_traverseable());
@@ -887,7 +1015,7 @@ impl<'a> VM<'a> {
         }
     }
 
-    pub fn root_string(&self, ptr: GcPtr<Str>) -> RootStr {
+    pub fn root_string<'vm>(&'vm self, ptr: GcPtr<Str>) -> RootStr<'vm, 'a> {
         self.roots.borrow_mut().push(ptr.as_traverseable());
         RootStr(Root {
             roots: &self.roots,
@@ -910,7 +1038,8 @@ impl<'a> VM<'a> {
         }))
     }
     pub fn new_def<D>(&self, def: D) -> GcPtr<D::Value>
-        where D: DataDef
+        where D: DataDef,
+              VMGc<'a>: GcAllocator<D::Value>
     {
         self.gc.borrow_mut().alloc(def)
     }
@@ -941,7 +1070,7 @@ impl<'a> VM<'a> {
     }
 
     fn with_roots<F, R>(&self, stack: &Stack<'a>, f: F) -> R
-        where F: for<'b> FnOnce(&mut Gc, Roots<'a, 'b>) -> R
+        where F: for<'b> FnOnce(&mut VMGc<'a>, Roots<'a, 'b, VMGc<'a>>) -> R
     {
         // For this to be safe we require that the received stack is the same one that is in this
         // VM
@@ -960,7 +1089,8 @@ impl<'a> VM<'a> {
     }
 
     pub fn alloc<D>(&self, stack: &Stack<'a>, def: D) -> GcPtr<D::Value>
-        where D: DataDef + Traverseable
+        where D: DataDef + Traverseable<VMGc<'a>>,
+              VMGc<'a>: GcAllocator<D::Value>
     {
         self.with_roots(stack, |gc, roots| unsafe { gc.alloc_and_collect(roots, def) })
     }
@@ -1975,7 +2105,8 @@ Int(1)
         let text = r#"io.run_expr "123" "#;
         let mut vm = VM::new();
         let result = run_expr(&mut vm, text);
-        assert_eq!(result, Value::String(vm.gc.borrow_mut().alloc("123")));
+        assert_eq!(result,
+                   Value::String(vm.gc.borrow_mut().str_gc.alloc("123")));
     }
 
     test_expr!{ run_expr_io,

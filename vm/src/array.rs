@@ -5,7 +5,7 @@ use std::mem;
 use std::ops::{Deref, DerefMut};
 use std::slice;
 
-use gc::{DataDef, Gc, Traverseable, WriteOnly};
+use gc::{DataDef, Traverseable, WriteOnly};
 
 enum Void {}
 
@@ -74,8 +74,8 @@ impl<T: fmt::Debug> fmt::Debug for Array<T> {
     }
 }
 
-impl<T: Traverseable> Traverseable for Array<T> {
-    fn traverse(&self, gc: &mut Gc) {
+impl<G, T: Traverseable<G>> Traverseable<G> for Array<T> {
+    fn traverse(&self, gc: &mut G) {
         (**self).traverse(gc)
     }
 }
@@ -144,8 +144,8 @@ impl fmt::Display for Str {
     }
 }
 
-impl Traverseable for Str {
-    fn traverse(&self, _: &mut Gc) {}
+impl <G> Traverseable<G> for Str {
+    fn traverse(&self, _: &mut G) {}
 }
 
 impl Deref for Str {

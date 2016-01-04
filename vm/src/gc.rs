@@ -85,9 +85,27 @@ impl<'s> WriteOnly<'s, str> {
     }
 }
 
+pub trait GcAllocator<T: ?Sized> {
+    fn alloc<D>(&mut self, def: D) -> GcPtr<D::Value>
+        where D: DataDef<Value = T>,
+              T: for<'a> FromPtr<&'a D>;
+}
+
+pub trait Gc {
+    ///Unsafe since it calls collects if memory needs to be collected
+    unsafe fn alloc_and_collect<R, D>(&mut self, roots: R, def: D) -> GcPtr<D::Value>
+        where R: Traverseable<Self>,
+              D: DataDef + Traverseable<Self>,
+              Self: GcAllocator<D::Value>;
+
+    ///Does a mark and sweep collection by walking from `roots`. This function is unsafe since
+    ///roots need to cover all reachable object.
+    unsafe fn collect<R>(&mut self, roots: R) where R: Traverseable<Self>;
+}
+
 #[derive(Debug)]
-pub struct Gc {
-    values: Option<AllocPtr>,
+pub struct TypedGc<T: ?Sized> {
+    values: Option<AllocPtr<T>>,
     allocated_memory: usize,
     collect_limit: usize,
 }
@@ -122,25 +140,62 @@ unsafe impl<T> DataDef for Move<T> {
     }
 }
 
+pub trait HasHeader {
+    fn mark_header(&self) -> bool;
+    fn align_of(&self) -> usize;
+}
+
+impl<T> HasHeader for T {
+    fn mark_header(&self) -> bool {
+        let header = unsafe {
+            let p = self as *const T as *const u8;
+            let header = p.offset(-(value_offset(self) as isize));
+            &*(header as *const GcHeader<T>)
+        };
+        if header.header.marked.get() {
+            true
+        } else {
+            header.header.marked.set(true);
+            false
+        }
+    }
+
+    fn align_of(&self) -> usize {
+        mem::align_of::<T>()
+    }
+}
+
+pub trait GcTraverseable<G: ?Sized>: Traverseable<G> + HasHeader { }
+
+impl<G: ?Sized, T: ?Sized + Traverseable<G> + HasHeader> GcTraverseable<G> for T {}
+
 #[derive(Debug)]
-struct GcHeader {
-    next: Option<AllocPtr>,
+#[repr(C)]
+struct Header<T: ?Sized> {
+    next: Option<AllocPtr<T>>,
     value_size: usize,
     marked: Cell<bool>,
 }
 
-
-struct AllocPtr {
-    ptr: *mut GcHeader,
+#[derive(Debug)]
+#[repr(C)]
+struct GcHeader<T: ?Sized> {
+    header: Header<T>,
+    value: T,
 }
 
-impl AllocPtr {
-    fn new(value_size: usize) -> AllocPtr {
+
+struct AllocPtr<T: ?Sized> {
+    ptr: *mut GcHeader<T>,
+}
+
+impl<T> AllocPtr<T> {
+    fn new(value_size: usize) -> AllocPtr<T> {
         unsafe {
-            let alloc_size = GcHeader::value_offset() + value_size;
-            let ptr = allocate(alloc_size) as *mut GcHeader;
-            ptr::write(ptr,
-                       GcHeader {
+            let alloc_size = sized_value_offset::<T>() + value_size;
+            let ptr = &mut *(allocate(alloc_size) as *mut GcHeader<T>);
+            ptr::write(&mut ptr.header,
+                       Header {
                            next: None,
                            value_size: value_size,
                            marked: Cell::new(false),
@@ -148,54 +203,62 @@ impl AllocPtr {
             AllocPtr { ptr: ptr }
         }
     }
+}
 
+impl<T: ?Sized> AllocPtr<T> {
     fn size(&self) -> usize {
-        GcHeader::value_offset() + self.value_size
+        value_offset(self) + self.header.value_size
     }
 }
 
-impl fmt::Debug for AllocPtr {
+impl<T: ?Sized + fmt::Debug> fmt::Debug for AllocPtr<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "AllocPtr {{ ptr: {:?} }}", &**self)
+        write!(f,
+               "AllocPtr {{ ptr: {:?}, value: {:?} }}",
+               &**self,
+               &self.value)
     }
 }
 
-impl Drop for AllocPtr {
+impl<T: ?Sized> Drop for AllocPtr<T> {
     fn drop(&mut self) {
         unsafe {
             let size = self.size();
-            ptr::read(&*self.ptr);
+            ptr::read(&self.header);
+            // FIXME #18: drop the value as well
             deallocate(self.ptr as *mut u8, size);
         }
     }
 }
 
-impl Deref for AllocPtr {
-    type Target = GcHeader;
-    fn deref(&self) -> &GcHeader {
+impl<T: ?Sized> Deref for AllocPtr<T> {
+    type Target = GcHeader<T>;
+    fn deref(&self) -> &GcHeader<T> {
         unsafe { &*self.ptr }
     }
 }
 
-impl DerefMut for AllocPtr {
-    fn deref_mut(&mut self) -> &mut GcHeader {
+impl<T: ?Sized> DerefMut for AllocPtr<T> {
+    fn deref_mut(&mut self) -> &mut GcHeader<T> {
         unsafe { &mut *self.ptr }
     }
 }
 
-impl GcHeader {
-    fn value(&self) -> *mut () {
-        unsafe {
-            let ptr: *const GcHeader = self;
-            (ptr as *mut u8).offset(GcHeader::value_offset() as isize) as *mut ()
-        }
+impl<T: ?Sized> GcHeader<T> {
+    fn value(&mut self) -> &mut T {
+        &mut self.value
     }
+}
+fn value_offset<T: HasHeader>(value: &T) -> usize {
+    let hs = mem::size_of::<Header<T>>();
+    let max_align = value.align_of();
+    hs + ((max_align - (hs % max_align)) % max_align)
+}
 
-    fn value_offset() -> usize {
-        let hs = mem::size_of::<GcHeader>();
-        let max_align = mem::align_of::<f64>();
-        hs + ((max_align - (hs % max_align)) % max_align)
-    }
+fn sized_value_offset<T>() -> usize {
+    let hs = mem::size_of::<Header<T>>();
+    let max_align = mem::align_of::<T>();
+    hs + ((max_align - (hs % max_align)) % max_align)
 }
 
 
@@ -260,65 +323,59 @@ impl<T: ?Sized + fmt::Display> fmt::Display for GcPtr<T> {
     }
 }
 
-impl<T: ?Sized> GcPtr<T> {
-    fn header(&self) -> &GcHeader {
-        // Use of transmute_copy allows us to get the pointer
-        // to the data regardless of wether T is unsized or not
-        // (DST is structured as (ptr, len))
-        // This function should always be safe to call as GcPtr's should always have a header
-        // TODO: Better way of doing this?
+impl<'a, T> GcPtr<T> {
+    fn header(&self) -> &GcHeader<T> {
         unsafe {
-            let p: *mut u8 = mem::transmute_copy(&self.ptr);
-            let header = p.offset(-(GcHeader::value_offset() as isize));
-            &*(header as *const GcHeader)
+            let t: &T = self;
+            let p = t as *const T as *const u8;
+            let header = p.offset(-(value_offset(t) as isize));
+            &*(header as *const GcHeader<T>)
         }
     }
-}
 
-impl<'a, T: Traverseable + 'a> GcPtr<T> {
-    pub fn as_traverseable(self) -> GcPtr<Traverseable + 'a> {
-        GcPtr { ptr: self.ptr as *const Traverseable }
-    }
-}
-impl GcPtr<str> {
-    pub fn as_traverseable_string(self) -> GcPtr<Traverseable> {
-        // As there is nothing to traverse in a str we can safely cast it to *const u8 and use
-        // u8's Traverseable impl
-        GcPtr { ptr: self.as_ptr() as *const Traverseable }
+    pub fn as_traverseable<G>(self) -> GcPtr<GcTraverseable<G> + 'a>
+        where T: Traverseable<G> + 'a
+    {
+        GcPtr { ptr: self.ptr as *const GcTraverseable<G> }
     }
 }
 
 ///Trait which must be implemented on all root types which contain GcPtr
 ///The type implementing Traverseable must call traverse on each of its fields
 ///which in turn contains GcPtr
-pub trait Traverseable {
-    fn traverse(&self, func: &mut Gc);
+pub trait Traverseable<G: ?Sized> {
+    fn traverse(&self, gc: &mut G);
+    ///Marks this object.
+    ///Returns true if the pointer was already marked
+    fn mark(&self, _gc: &mut G) -> bool {
+        false
+    }
 }
 
-impl<T> Traverseable for Move<T> where T: Traverseable
+impl<G, T> Traverseable<G> for Move<T> where T: Traverseable<G>
 {
-    fn traverse(&self, gc: &mut Gc) {
+    fn traverse(&self, gc: &mut G) {
         self.0.traverse(gc)
     }
 }
 
-impl<T: ?Sized> Traverseable for Box<T> where T: Traverseable
+impl<G, T: ?Sized> Traverseable<G> for Box<T> where T: Traverseable<G>
 {
-    fn traverse(&self, gc: &mut Gc) {
+    fn traverse(&self, gc: &mut G) {
         (**self).traverse(gc)
     }
 }
 
-impl<'a, T: ?Sized> Traverseable for &'a T where T: Traverseable
+impl<'a, G, T: ?Sized> Traverseable<G> for &'a T where T: Traverseable<G>
 {
-    fn traverse(&self, gc: &mut Gc) {
+    fn traverse(&self, gc: &mut G) {
         (**self).traverse(gc);
     }
 }
 
-impl<'a, T: ?Sized> Traverseable for &'a mut T where T: Traverseable
+impl<'a, G, T: ?Sized> Traverseable<G> for &'a mut T where T: Traverseable<G>
 {
-    fn traverse(&self, gc: &mut Gc) {
+    fn traverse(&self, gc: &mut G) {
         (**self).traverse(gc);
     }
 }
@@ -327,9 +384,9 @@ macro_rules! tuple_traverse {
     () => {};
     ($first: ident $($id: ident)*) => {
         tuple_traverse!($($id)*);
-        impl <$first $(,$id)*> Traverseable for ($first, $($id,)*)
-            where $first: Traverseable
-                  $(, $id: Traverseable)* {
+        impl <Gc, $first $(,$id)*> Traverseable<Gc> for ($first, $($id,)*)
+            where $first: Traverseable<Gc>
+                  $(, $id: Traverseable<Gc>)* {
             #[allow(non_snake_case)]
             fn traverse(&self, gc: &mut Gc) {
                 let (ref $first, $(ref $id,)*) = *self;
@@ -344,59 +401,63 @@ macro_rules! tuple_traverse {
 
 tuple_traverse!(A B C D E F G H I J);
 
-impl Traverseable for () {
-    fn traverse(&self, _: &mut Gc) {}
+impl<G> Traverseable<G> for () {
+    fn traverse(&self, _: &mut G) {}
 }
 
-impl Traverseable for Any {
-    fn traverse(&self, _: &mut Gc) {}
+impl<G> Traverseable<G> for Any {
+    fn traverse(&self, _: &mut G) {}
 }
 
-impl Traverseable for u8 {
-    fn traverse(&self, _: &mut Gc) {}
+impl<G> Traverseable<G> for u8 {
+    fn traverse(&self, _: &mut G) {}
 }
 
-impl Traverseable for str {
-    fn traverse(&self, _: &mut Gc) {}
+impl<G> Traverseable<G> for str {
+    fn traverse(&self, _: &mut G) {}
 }
 
-impl<T> Traverseable for Cell<T> where T: Traverseable + Copy
+impl<G, T> Traverseable<G> for Cell<T> where T: Traverseable<G> + Copy
 {
-    fn traverse(&self, f: &mut Gc) {
+    fn traverse(&self, f: &mut G) {
         self.get().traverse(f);
     }
 }
 
-impl<U> Traverseable for [U] where U: Traverseable
+impl<G, U> Traverseable<G> for [U] where U: Traverseable<G>
 {
-    fn traverse(&self, f: &mut Gc) {
+    fn traverse(&self, f: &mut G) {
         for x in self.iter() {
             x.traverse(f);
         }
     }
 }
 
-impl<T> Traverseable for Vec<T> where T: Traverseable
+impl<G, T> Traverseable<G> for Vec<T> where T: Traverseable<G>
 {
-    fn traverse(&self, gc: &mut Gc) {
+    fn traverse(&self, gc: &mut G) {
         (**self).traverse(gc);
     }
 }
 
 ///When traversing a GcPtr we need to mark it
-impl<T: ?Sized> Traverseable for GcPtr<T> where T: Traverseable
+impl<G, T: ?Sized + HasHeader> Traverseable<G> for GcPtr<T> where T: Traverseable<G>
 {
-    fn traverse(&self, gc: &mut Gc) {
-        if !gc.mark(*self) {
+    fn traverse(&self, gc: &mut G) {
+        if !self.mark(gc) {
             // Continue traversing if this ptr was not already marked
             (**self).traverse(gc);
         }
     }
+
+    fn mark(&self, _: &mut G) -> bool {
+        T::mark_header(self)
+    }
 }
 
-impl Gc {
-    pub fn new() -> Gc {
-        Gc {
+impl<T> TypedGc<T> {
+    pub fn new() -> TypedGc<T> {
+        TypedGc {
             values: None,
             allocated_memory: 0,
             collect_limit: 100,
@@ -405,8 +466,8 @@ impl Gc {
 
     ///Unsafe since it calls collects if memory needs to be collected
     pub unsafe fn alloc_and_collect<R, D>(&mut self, roots: R, def: D) -> GcPtr<D::Value>
-        where R: Traverseable,
-              D: DataDef + Traverseable
+        where R: Traverseable<Self>,
+              D: DataDef<Value = T> + Traverseable<Self>
     {
         if self.allocated_memory >= self.collect_limit {
             self.collect((roots, &def));
@@ -415,14 +476,14 @@ impl Gc {
     }
 
     pub fn alloc<D>(&mut self, def: D) -> GcPtr<D::Value>
-        where D: DataDef
+        where D: DataDef<Value = T>
     {
         let size = def.size();
         let mut ptr = AllocPtr::new(size);
-        ptr.next = self.values.take();
+        ptr.header.next = self.values.take();
         self.allocated_memory += ptr.size();
         unsafe {
-            let p: *mut D::Value = D::Value::make_ptr(&def, ptr.value());
+            let p: *mut D::Value = ptr.value();
             let ret: *const D::Value = &*def.initialize(WriteOnly::new(p));
             // Check that the returned pointer is the same as the one we sent as an extra precaution
             // that the pointer was initialized
@@ -435,7 +496,7 @@ impl Gc {
     ///Does a mark and sweep collection by walking from `roots`. This function is unsafe since
     ///roots need to cover all reachable object.
     pub unsafe fn collect<R>(&mut self, roots: R)
-        where R: Traverseable
+        where R: Traverseable<Self>
     {
         debug!("Start collect");
         roots.traverse(self);
@@ -445,13 +506,13 @@ impl Gc {
 
 
     pub fn object_count(&self) -> usize {
-        let mut header: &GcHeader = match self.values {
+        let mut header: &GcHeader<T> = match self.values {
             Some(ref x) => &**x,
             None => return 0,
         };
         let mut count = 1;
         loop {
-            match header.next {
+            match header.header.next {
                 Some(ref ptr) => {
                     count += 1;
                     header = &**ptr;
@@ -462,34 +523,23 @@ impl Gc {
         count
     }
 
-    ///Marks the GcPtr
-    ///Returns true if the pointer was already marked
-    fn mark<T: ?Sized>(&mut self, value: GcPtr<T>) -> bool {
-        let header = value.header();
-        if header.marked.get() {
-            return true;
-        } else {
-            header.marked.set(true);
-            return false;
-        }
-    }
-
-    unsafe fn sweep(&mut self) {
+    pub unsafe fn sweep(&mut self) {
         // Usage of unsafe are sadly needed to circumvent the borrow checker
         let mut first = self.values.take();
         {
             let mut maybe_header = &mut first;
             loop {
-                let current: &mut Option<AllocPtr> = mem::transmute(&mut *maybe_header);
+                let current: &mut Option<AllocPtr<T>> = mem::transmute(&mut *maybe_header);
                 maybe_header = match *maybe_header {
                     Some(ref mut header) => {
-                        if !header.marked.get() {
-                            let unreached = mem::replace(current, header.next.take());
+                        if !header.header.marked.get() {
+                            let unreached = mem::replace(current, header.header.next.take());
                             self.free(unreached);
                             continue;
                         } else {
-                            header.marked.set(false);
-                            let next: &mut Option<AllocPtr> = mem::transmute(&mut header.next);
+                            header.header.marked.set(false);
+                            let next: &mut Option<AllocPtr<T>> = mem::transmute(&mut header.header
+                                                                                           .next);
                             next
                         }
                     }
@@ -500,11 +550,10 @@ impl Gc {
         self.values = first;
     }
 
-    fn free(&mut self, header: Option<AllocPtr>) {
+    fn free(&mut self, header: Option<AllocPtr<T>>) {
         if let Some(ref ptr) = header {
             self.allocated_memory -= ptr.size();
         }
-        debug!("FREE: {:?}", header);
         drop(header);
     }
 }
@@ -512,7 +561,7 @@ impl Gc {
 
 #[cfg(test)]
 mod tests {
-    use super::{Gc, GcPtr, Traverseable, DataDef, WriteOnly};
+    use super::{TypedGc, GcPtr, GcHeader, Traverseable, DataDef, WriteOnly};
     use std::fmt;
     use std::mem;
 
@@ -554,8 +603,8 @@ mod tests {
         Data(Data_),
     }
 
-    impl Traverseable for Value {
-        fn traverse(&self, gc: &mut Gc) {
+    impl<G> Traverseable<G> for Value {
+        fn traverse(&self, gc: &mut G) {
             match *self {
                 Data(ref data) => data.fields.traverse(gc),
                 _ => (),
@@ -569,16 +618,16 @@ mod tests {
 
     #[test]
     fn gc_header() {
-        let mut gc: Gc = Gc::new();
+        let mut gc = TypedGc::new();
         let ptr = gc.alloc(Def { elems: &[Int(1)] });
-        let header: *const _ = ptr.header();
-        let other: *const _ = &**gc.values.as_mut().unwrap();
+        let header: *const GcHeader<_> = ptr.header();
+        let other: *const _ = &**gc.values.as_ref().unwrap();
         assert_eq!(header, other);
     }
 
     #[test]
     fn basic() {
-        let mut gc: Gc = Gc::new();
+        let mut gc = TypedGc::new();
         let mut stack: Vec<Value> = Vec::new();
         stack.push(new_data(gc.alloc(Def { elems: &[Int(1)] })));
         let d2 = new_data(gc.alloc(Def { elems: &[stack[0]] }));

@@ -1,25 +1,25 @@
 use std::marker::PhantomData;
-use gc::{Gc, Traverseable, Move};
+use gc::{Traverseable, Move};
 use std::cell::Cell;
 use api::{VMType, Pushable};
 use vm::{StackFrame, Status, Value, VM};
 
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Lazy<'a, T> {
     value: Cell<Lazy_<'a>>,
     _marker: PhantomData<T>
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum Lazy_<'a> {
     Blackhole,
     Thunk(Value<'a>),
     Value(Value<'a>),
 }
 
-impl<'a, T> Traverseable for Lazy<'a, T> {
-    fn traverse(&self, gc: &mut Gc) {
+impl<'a, G, T> Traverseable<G> for Lazy<'a, T> {
+    fn traverse(&self, gc: &mut G) {
         match self.value.get() {
             Lazy_::Blackhole => (),
             Lazy_::Thunk(value) => value.traverse(gc),
@@ -83,7 +83,7 @@ pub fn force(vm: &VM) -> Status {
 pub fn lazy(vm: &VM) -> Status {
     let mut stack = StackFrame::new(vm.stack.borrow_mut(), 1, None);
     let f = stack[0];
-    let lazy = vm.gc.borrow_mut().alloc(Move(Lazy {
+    let lazy = vm.gc.borrow_mut().lazy_gc.alloc(Move(Lazy {
         value: Cell::new(Lazy_::Thunk(f)),
         _marker: PhantomData
     }));

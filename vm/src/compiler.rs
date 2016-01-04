@@ -1,6 +1,6 @@
 use std::ops::{Deref, DerefMut};
 use interner::{Interner, InternedStr};
-use gc::Gc;
+use vm::VMGc;
 use base::ast;
 use base::symbol::{Symbol, Symbols};
 use base::ast::{DisplayEnv, LExpr, Expr, Integer, Float, String, Bool};
@@ -254,22 +254,22 @@ impl CompilerEnv for TypeInfos {
     }
 }
 
-pub struct Compiler<'a> {
-    globals: &'a (CompilerEnv + 'a),
-    interner: &'a mut Interner,
-    gc: &'a mut Gc,
-    symbols: &'a mut Symbols,
+pub struct Compiler<'vm, 'a: 'vm> {
+    globals: &'vm (CompilerEnv + 'vm),
+    interner: &'vm mut Interner,
+    gc: &'vm mut VMGc<'a>,
+    symbols: &'vm mut Symbols,
     stack_constructors: ScopedMap<Symbol, TcType>,
     stack_types: ScopedMap<Symbol, (Vec<ast::Generic<Symbol>>, TcType)>,
 }
 
-impl<'a> ::check::kindcheck::KindEnv for Compiler<'a> {
+impl<'vm, 'a> ::check::kindcheck::KindEnv for Compiler<'vm, 'a> {
     fn find_kind(&self, _type_name: Symbol) -> Option<::std::rc::Rc<::base::ast::Kind>> {
         None
     }
 }
 
-impl<'a> TypeEnv for Compiler<'a> {
+impl<'vm, 'a> TypeEnv for Compiler<'vm, 'a> {
     fn find_type(&self, _id: &Symbol) -> Option<&TcType> {
         None
     }
@@ -283,12 +283,12 @@ impl<'a> TypeEnv for Compiler<'a> {
     }
 }
 
-impl<'a> Compiler<'a> {
-    pub fn new(globals: &'a CompilerEnv,
-               interner: &'a mut Interner,
-               gc: &'a mut Gc,
-               symbols: &'a mut Symbols)
-               -> Compiler<'a> {
+impl<'vm, 'a> Compiler<'vm, 'a> {
+    pub fn new(globals: &'vm CompilerEnv,
+               interner: &'vm mut Interner,
+               gc: &'vm mut VMGc<'a>,
+               symbols: &'vm mut Symbols)
+               -> Compiler<'vm, 'a> {
         Compiler {
             globals: globals,
             interner: interner,

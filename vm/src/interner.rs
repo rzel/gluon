@@ -4,7 +4,8 @@ use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use base::ast::{AstId, DisplayEnv, IdentEnv, ASTType};
 
-use gc::{GcPtr, Gc, Traverseable};
+use gc::{GcPtr, Traverseable};
+use vm::VMGc;
 use array::Str;
 
 /// Interned strings which allow for fast equality checks and hashing
@@ -59,8 +60,8 @@ pub struct Interner {
     indexes: HashMap<&'static str, InternedStr>,
 }
 
-impl Traverseable for Interner {
-    fn traverse(&self, gc: &mut Gc) {
+impl <G> Traverseable<G> for Interner {
+    fn traverse(&self, gc: &mut G) {
         for (_, v) in self.indexes.iter() {
             v.0.traverse(gc);
         }
@@ -72,12 +73,12 @@ impl Interner {
         Interner { indexes: HashMap::new() }
     }
 
-    pub fn intern(&mut self, gc: &mut Gc, s: &str) -> InternedStr {
+    pub fn intern(&mut self, gc: &mut VMGc, s: &str) -> InternedStr {
         match self.indexes.get(s) {
             Some(interned_str) => return *interned_str,
             None => (),
         }
-        let gc_str = InternedStr(gc.alloc(s));
+        let gc_str = InternedStr(gc.str_gc.alloc(s));
         // The key will live as long as the value it refers to and the static str never escapes
         // outside interner so this is safe
         let key: &'static str = unsafe { ::std::mem::transmute::<&str, &'static str>(&gc_str) };
@@ -85,7 +86,7 @@ impl Interner {
         gc_str
     }
 
-    pub fn with_env<'a, F, R>(&'a mut self, gc: &'a mut Gc, f: F) -> R
+    pub fn with_env<'a, F, R>(&'a mut self, gc: &'a mut VMGc<'a>, f: F) -> R
         where F: FnOnce(InternerEnv<'a>) -> R
     {
         f(InternerEnv(self, gc))
@@ -103,7 +104,7 @@ impl fmt::Display for InternedStr {
     }
 }
 
-pub struct InternerEnv<'a>(&'a mut Interner, &'a mut Gc);
+pub struct InternerEnv<'a>(&'a mut Interner, &'a mut VMGc<'a>);
 
 impl<'a> InternerEnv<'a> {
     pub fn intern(&mut self, s: &str) -> InternedStr {
@@ -142,12 +143,12 @@ pub mod tests {
     use std::rc::Rc;
     use std::cell::RefCell;
     use super::*;
-    use gc::Gc;
+    use vm::VMGc;
 
     ///Returns a reference to the interner stored in TLD
-    pub fn get_local_interner() -> Rc<RefCell<(Interner, Gc)>> {
-        thread_local!(static INTERNER: Rc<RefCell<(Interner, Gc)>>
-                      = Rc::new(RefCell::new((Interner::new(), Gc::new()))));
+    pub fn get_local_interner() -> Rc<RefCell<(Interner, VMGc<'static>)>> {
+        thread_local!(static INTERNER: Rc<RefCell<(Interner, VMGc<'static>)>>
+                      = Rc::new(RefCell::new((Interner::new(), VMGc::new()))));
         INTERNER.with(|interner| interner.clone())
     }
 

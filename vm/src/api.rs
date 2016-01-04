@@ -1,5 +1,5 @@
 use base::ast;
-use gc::Move;
+use gc::{GcAllocator, Move};
 use base::symbol::Symbol;
 use vm::{VM, VMResult, Status, BytecodeFunction, DataStruct, ExternFunction, RootedValue, Value,
          Userdata_, StackFrame, VMInt, Error, Root, RootStr};
@@ -500,11 +500,11 @@ impl<'a: 'vm, 'vm, T> Getable<'a, 'vm> for Array<'a, 'vm, T> {
     }
 }
 
-impl<'r, T: Any> VMType for Root<'r, T> {
+impl<'vm, 'a, T: Any> VMType for Root<'vm, 'a, T> {
     type Type = T;
 }
-impl<'a, 'vm, T: Any> Getable<'a, 'vm> for Root<'vm, T> {
-    fn from_value(vm: &'vm VM<'a>, value: Value<'a>) -> Option<Root<'vm, T>> {
+impl<'a, 'vm, T: Any> Getable<'a, 'vm> for Root<'vm, 'a, T> {
+    fn from_value(vm: &'vm VM<'a>, value: Value<'a>) -> Option<Root<'vm, 'a, T>> {
         match value {
             Value::Userdata(v) => vm.root::<T>(v.data).map(From::from),
             _ => None,
@@ -512,11 +512,11 @@ impl<'a, 'vm, T: Any> Getable<'a, 'vm> for Root<'vm, T> {
     }
 }
 
-impl<'r> VMType for RootStr<'r> {
+impl<'vm, 'a> VMType for RootStr<'vm, 'a> {
     type Type = <str as VMType>::Type;
 }
-impl<'a, 'vm> Getable<'a, 'vm> for RootStr<'vm> {
-    fn from_value(vm: &'vm VM<'a>, value: Value<'a>) -> Option<RootStr<'vm>> {
+impl<'a, 'vm> Getable<'a, 'vm> for RootStr<'vm, 'a> {
+    fn from_value(vm: &'vm VM<'a>, value: Value<'a>) -> Option<RootStr<'vm, 'a>> {
         match value {
             Value::String(v) => Some(vm.root_string(v)),
             _ => None,
