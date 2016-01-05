@@ -39,7 +39,7 @@ pub struct Userdata_ {
 impl Userdata_ {
     pub fn new<T: Any>(vm: &VM, v: T) -> Userdata_ {
         let v: Box<Any> = Box::new(v);
-        Userdata_ { data: vm.gc.borrow_mut().alloc(Move(v)) }
+        Userdata_ { data: vm.gc.borrow_mut().alloc(Move(v)).expect("Allocation") }
     }
     fn ptr(&self) -> *const () {
         let p: *const _ = &*self.data;
@@ -127,6 +127,7 @@ impl BytecodeFunction {
             inner_functions: fs,
             strings: strings,
         }))
+        .expect("Allocation")
     }
 }
 
@@ -490,7 +491,7 @@ impl<'a> Gc for VMGc<'a> {
         if self.allocated_memory >= self.collect_limit {
             self.collect((roots, &mut def));
         }
-        self.alloc(def)
+        self.alloc(def).unwrap()
     }
 
     unsafe fn collect<R>(&mut self, roots: R)
@@ -513,66 +514,66 @@ impl<'a> Gc for VMGc<'a> {
 }
 
 impl<'a> GcAllocator<Str> for VMGc<'a> {
-    fn alloc<D>(&mut self, def: D) -> GcPtr<D::Value>
+    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, ::gc::Error>
         where D: DataDef<Value = Str>
     {
-        self.str_gc.alloc(def)
+        panic!()
     }
 }
 
 impl<'a> GcAllocator<DataStruct<'a>> for VMGc<'a> {
-    fn alloc<D>(&mut self, def: D) -> GcPtr<D::Value>
+    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, ::gc::Error>
         where D: DataDef<Value = DataStruct<'a>>
     {
-        self.data_gc.alloc(def)
+        panic!()
     }
 }
 
 impl<'a> GcAllocator<ClosureData<'a>> for VMGc<'a> {
-    fn alloc<D>(&mut self, def: D) -> GcPtr<D::Value>
+    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, ::gc::Error>
         where D: DataDef<Value = ClosureData<'a>>
     {
-        self.closure_gc.alloc(def)
+        panic!()
     }
 }
 
 impl<'a> GcAllocator<PartialApplicationData<'a>> for VMGc<'a> {
-    fn alloc<D>(&mut self, def: D) -> GcPtr<D::Value>
+    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, ::gc::Error>
         where D: DataDef<Value = PartialApplicationData<'a>>
     {
-        self.partial_gc.alloc(def)
+        panic!()
     }
 }
 
 impl<'a> GcAllocator<ExternFunction<'a>> for VMGc<'a> {
-    fn alloc<D>(&mut self, def: D) -> GcPtr<D::Value>
+    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, ::gc::Error>
         where D: DataDef<Value = ExternFunction<'a>>
     {
-        self.function_gc.alloc(def)
+        panic!()
     }
 }
 
 impl<'a> GcAllocator<Lazy<'a, Value<'a>>> for VMGc<'a> {
-    fn alloc<D>(&mut self, def: D) -> GcPtr<D::Value>
+    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, ::gc::Error>
         where D: DataDef<Value = Lazy<'a, Value<'a>>>
     {
-        self.lazy_gc.alloc(def)
+        panic!()
     }
 }
 
 impl<'a> GcAllocator<Box<Any>> for VMGc<'a> {
-    fn alloc<D>(&mut self, def: D) -> GcPtr<D::Value>
+    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, ::gc::Error>
         where D: DataDef<Value = Box<Any>>
     {
-        self.box_gc.alloc(def)
+        panic!()
     }
 }
 
 impl<'a> GcAllocator<BytecodeFunction> for VMGc<'a> {
-    fn alloc<D>(&mut self, def: D) -> GcPtr<D::Value>
+    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, ::gc::Error>
         where D: DataDef<Value = BytecodeFunction>
     {
-        self.bytecode_gc.alloc(def)
+        panic!()
     }
 }
 
@@ -898,7 +899,7 @@ impl<'a> VM<'a> {
                 id: interned_id,
                 args: num_args,
                 function: f,
-            })))),
+            })).expect("Allocation"))),
         };
         self.names.borrow_mut().insert(id, GlobalFn(self.globals.len()));
         self.globals.push(global);
@@ -1035,13 +1036,14 @@ impl<'a> VM<'a> {
         Data(self.gc.borrow_mut().alloc(Def {
             tag: tag,
             elems: fields,
-        }))
+        }).expect("Allocation"))
     }
     pub fn new_def<D>(&self, def: D) -> GcPtr<D::Value>
         where D: DataDef,
               VMGc<'a>: GcAllocator<D::Value>
     {
         self.gc.borrow_mut().alloc(def)
+            .expect("Allocation")
     }
 
     pub fn new_data_and_collect(&self,
@@ -1060,6 +1062,7 @@ impl<'a> VM<'a> {
                    fields: &[Value<'a>])
                    -> GcPtr<ClosureData<'a>> {
         self.gc.borrow_mut().alloc(ClosureDataDef(func, fields))
+            .expect("Allocation")
     }
     fn new_closure_and_collect(&self,
                                stack: &Stack<'a>,

@@ -85,8 +85,11 @@ impl<'s> WriteOnly<'s, str> {
     }
 }
 
+#[derive(Debug)]
+pub struct Error;
+
 pub trait GcAllocator<T: ?Sized> {
-    fn alloc<D>(&mut self, def: D) -> GcPtr<D::Value>
+    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, Error>
         where D: DataDef<Value = T>,
               T: for<'a> FromPtr<&'a D>;
 }
@@ -137,6 +140,13 @@ unsafe impl<T> DataDef for Move<T> {
     }
     fn initialize(self, result: WriteOnly<T>) -> &mut T {
         result.write(self.0)
+    }
+}
+
+impl<G, T> Traverseable<G> for Move<T> where T: Traverseable<G>
+{
+    fn traverse(&self, gc: &mut G) {
+        self.0.traverse(gc);
     }
 }
 
@@ -452,6 +462,21 @@ impl<G, T: ?Sized + HasHeader> Traverseable<G> for GcPtr<T> where T: Traverseabl
 
     fn mark(&self, _: &mut G) -> bool {
         T::mark_header(self)
+    }
+}
+
+impl <T: Any, O: Any> GcAllocator<O> for TypedGc<T> {
+    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, Error>
+        where D: DataDef<Value = O>,
+              O: for<'a> FromPtr<&'a D>
+    {
+        use std::any::TypeId;
+        if TypeId::of::<O>() == TypeId::of::<T>() {
+            let ptr: GcPtr<T> = TypedGc::<T>::alloc(self, def);
+            Ok(mem::transmute::<GcPtr<T>, GcPtr<D::Value>>(ptr))
+        } else {
+            Err(Error)
+        }
     }
 }
 
