@@ -1,5 +1,5 @@
 use std::marker::PhantomData;
-use gc::{Traverseable, Move};
+use gc::{GcAllocator, Traverseable, Move};
 use std::cell::Cell;
 use api::{VMType, Pushable};
 use vm::{StackFrame, Status, Value, VM};
@@ -8,7 +8,7 @@ use vm::{StackFrame, Status, Value, VM};
 #[derive(Clone, PartialEq, Debug)]
 pub struct Lazy<'a, T> {
     value: Cell<Lazy_<'a>>,
-    _marker: PhantomData<T>
+    _marker: PhantomData<T>,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -28,9 +28,10 @@ impl<'a, G, T> Traverseable<G> for Lazy<'a, T> {
     }
 }
 
-impl <'a, T> VMType for Lazy<'a, T>
-where T: VMType,
-      T::Type: Sized {
+impl<'a, T> VMType for Lazy<'a, T>
+    where T: VMType,
+          T::Type: Sized
+{
     type Type = Lazy<'static, T::Type>;
 }
 
@@ -83,10 +84,13 @@ pub fn force(vm: &VM) -> Status {
 pub fn lazy(vm: &VM) -> Status {
     let mut stack = StackFrame::new(vm.stack.borrow_mut(), 1, None);
     let f = stack[0];
-    let lazy = vm.gc.borrow_mut().lazy_gc.alloc(Move(Lazy {
-        value: Cell::new(Lazy_::Thunk(f)),
-        _marker: PhantomData
-    }));
+    let lazy = vm.gc
+                 .borrow_mut()
+                 .alloc(Move(Lazy {
+                     value: Cell::new(Lazy_::Thunk(f)),
+                     _marker: PhantomData,
+                 }))
+                 .expect("Allocation");
     stack.push(Value::Lazy(lazy));
     Status::Ok
 }

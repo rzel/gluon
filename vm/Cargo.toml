@@ -9,6 +9,10 @@ authors = ["Markus <marwes91@gmail.com>"]
 [dependencies.quick-error]
 version = "0.2.1"
 
+
+[dependencies.any_ref]
+git = "https://github.com/Marwes/any_ref"
+
 [dependencies.base]
 path = "../base"
 [dependencies.parser]

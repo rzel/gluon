@@ -360,7 +360,7 @@ impl<'vm, 'a> Compiler<'vm, 'a> {
                 ast::Type::Data(ast::TypeConstructor::Data(id), _) => {
                     struct_ = id;
                 }
-                _ => break
+                _ => break,
             }
         }
         self.stack_constructors

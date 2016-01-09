@@ -25,6 +25,11 @@ version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
+name = "any_ref"
+version = "0.1.0"
+source = "git+https://github.com/Marwes/any_ref#2f1b64e349873fc59cf44d73c46e5ee0d7b30984"
+
+[[package]]
 name = "base"
 version = "0.1.0"
 dependencies = [
@@ -158,6 +163,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 name = "vm"
 version = "0.1.0"
 dependencies = [
+ "any_ref 0.1.0 (git+https://github.com/Marwes/any_ref)",
  "base 0.1.0",
  "check 0.1.0",
  "env_logger 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)",

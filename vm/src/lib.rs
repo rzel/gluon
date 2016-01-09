@@ -4,6 +4,8 @@ extern crate log;
 extern crate env_logger;
 #[macro_use]
 extern crate quick_error;
+#[macro_use]
+extern crate any_ref;
 
 extern crate base;
 extern crate parser;

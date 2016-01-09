@@ -18,6 +18,8 @@ pub struct Array<T> {
     _void: Void,
 }
 
+any_ref!(Array<T>);
+
 impl<T> Drop for Array<T> {
     fn drop(&mut self) {
         unsafe {
@@ -131,6 +133,7 @@ impl<'a, T: 'a> IntoIterator for &'a mut Array<T> {
 
 #[derive(Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Str(Array<u8>);
+any_ref!(Str);
 
 impl fmt::Debug for Str {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -144,7 +147,7 @@ impl fmt::Display for Str {
     }
 }
 
-impl <G> Traverseable<G> for Str {
+impl<G> Traverseable<G> for Str {
     fn traverse(&self, _: &mut G) {}
 }
 

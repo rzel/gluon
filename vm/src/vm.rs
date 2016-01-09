@@ -17,11 +17,14 @@ use check::Typed;
 use types::*;
 use base::fixed::{FixedMap, FixedVec};
 use interner::{Interner, InternedStr};
-use gc::{Gc, TypedGc, GcAllocator, GcPtr, GcTraverseable, Traverseable, DataDef, Move, WriteOnly};
+use gc::{TypedGc, GcAllocator, GcPtr, GcTraverseable, GcBase, Traverseable, DataDef, Move,
+         WriteOnly, Cons, FromPtr};
 use array::{Array, Str};
 use compiler::{Compiler, CompiledFunction, Variable, CompilerEnv};
 use api::Pushable;
 use lazy::Lazy;
+
+use any_ref;
 
 use self::Named::*;
 
@@ -121,13 +124,13 @@ impl BytecodeFunction {
                                 .map(|inner| BytecodeFunction::new(gc, inner))
                                 .collect();
         gc.alloc(Move(BytecodeFunction {
-            name: Some(id),
-            args: args,
-            instructions: instructions,
-            inner_functions: fs,
-            strings: strings,
-        }))
-        .expect("Allocation")
+              name: Some(id),
+              args: args,
+              instructions: instructions,
+              inner_functions: fs,
+              strings: strings,
+          }))
+          .expect("Allocation")
     }
 }
 
@@ -454,126 +457,69 @@ impl<'a> Typed for Global<'a> {
 pub struct VMGc<'a> {
     allocated_memory: usize,
     collect_limit: usize,
-    pub str_gc: TypedGc<Str>,
-    pub data_gc: TypedGc<DataStruct<'a>>,
-    pub function_gc: TypedGc<ExternFunction<'a>>,
-    pub closure_gc: TypedGc<ClosureData<'a>>,
-    pub partial_gc: TypedGc<PartialApplicationData<'a>>,
-    pub box_gc: TypedGc<Box<Any>>,
-    pub lazy_gc: TypedGc<Lazy<'a, Value<'a>>>,
-    pub bytecode_gc: TypedGc<BytecodeFunction>,
+    pub gc: Cons<TypedGc<Str>,
+                 Cons<TypedGc<DataStruct<'a>>,
+                      Cons<TypedGc<ExternFunction<'a>>,
+                           Cons<TypedGc<ClosureData<'a>>,
+                                Cons<TypedGc<PartialApplicationData<'a>>,
+                                     Cons<TypedGc<Box<Any>>,
+                                          Cons<TypedGc<Lazy<'a, Value<'a>>>,
+                                               TypedGc<BytecodeFunction>>>>>>>>,
 }
+any_ref!(BytecodeFunction);
+any_ref!(DataStruct<'a>);
+any_ref!(ExternFunction<'a>);
+any_ref!(ClosureData<'a>);
+any_ref!(PartialApplicationData<'a>);
+any_ref!(Lazy<'a, T>);
+any_ref!(Value<'a>);
 
 impl<'a> VMGc<'a> {
     pub fn new() -> VMGc<'a> {
         VMGc {
             allocated_memory: 0,
             collect_limit: 100,
-            str_gc: TypedGc::new(),
-            data_gc: TypedGc::new(),
-            function_gc: TypedGc::new(),
-            closure_gc: TypedGc::new(),
-            partial_gc: TypedGc::new(),
-            box_gc: TypedGc::new(),
-            lazy_gc: TypedGc::new(),
-            bytecode_gc: TypedGc::new(),
+            gc: Default::default(),
         }
     }
 }
 
-impl<'a> Gc for VMGc<'a> {
-    unsafe fn alloc_and_collect<R, D>(&mut self, roots: R, mut def: D) -> GcPtr<D::Value>
-        where R: Traverseable<Self>,
-              D: DataDef + Traverseable<Self>,
-              Self: GcAllocator<D::Value>
-    {
-        self.allocated_memory += def.size();
-        if self.allocated_memory >= self.collect_limit {
-            self.collect((roots, &mut def));
-        }
-        self.alloc(def).unwrap()
-    }
-
+impl<'a> GcBase for VMGc<'a> {
     unsafe fn collect<R>(&mut self, roots: R)
         where R: Traverseable<Self>
     {
         debug!("Start collect");
         roots.traverse(self);
 
-        self.str_gc.sweep();
-        self.data_gc.sweep();
-        self.function_gc.sweep();
-        self.closure_gc.sweep();
-        self.partial_gc.sweep();
-        self.box_gc.sweep();
-        self.lazy_gc.sweep();
-        self.bytecode_gc.sweep();
+        self.gc.sweep();
 
         self.collect_limit = 2 * self.allocated_memory;
     }
-}
-
-impl<'a> GcAllocator<Str> for VMGc<'a> {
-    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, ::gc::Error>
-        where D: DataDef<Value = Str>
-    {
-        panic!()
+    unsafe fn sweep(&mut self) {
+        self.gc.sweep();
     }
 }
 
-impl<'a> GcAllocator<DataStruct<'a>> for VMGc<'a> {
-    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, ::gc::Error>
-        where D: DataDef<Value = DataStruct<'a>>
+impl<'a, O: any_ref::Type<'a>> GcAllocator<O> for VMGc<'a> where O::Static: Any
+{
+    type Ptr = GcPtr<O>;
+    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, ::gc::Error<D>>
+        where D: DataDef<Value = O>
     {
-        panic!()
+        GcAllocator::alloc(&mut self.gc, def)
     }
-}
 
-impl<'a> GcAllocator<ClosureData<'a>> for VMGc<'a> {
-    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, ::gc::Error>
-        where D: DataDef<Value = ClosureData<'a>>
+    unsafe fn alloc_and_collect<R, D>(&mut self, roots: R, mut def: D) -> GcPtr<O>
+        where R: Traverseable<Self>,
+              D: DataDef<Value = O> + Traverseable<Self>,
+              O: for<'b> FromPtr<&'b D>,
+              Self: Sized
     {
-        panic!()
-    }
-}
-
-impl<'a> GcAllocator<PartialApplicationData<'a>> for VMGc<'a> {
-    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, ::gc::Error>
-        where D: DataDef<Value = PartialApplicationData<'a>>
-    {
-        panic!()
-    }
-}
-
-impl<'a> GcAllocator<ExternFunction<'a>> for VMGc<'a> {
-    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, ::gc::Error>
-        where D: DataDef<Value = ExternFunction<'a>>
-    {
-        panic!()
-    }
-}
-
-impl<'a> GcAllocator<Lazy<'a, Value<'a>>> for VMGc<'a> {
-    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, ::gc::Error>
-        where D: DataDef<Value = Lazy<'a, Value<'a>>>
-    {
-        panic!()
-    }
-}
-
-impl<'a> GcAllocator<Box<Any>> for VMGc<'a> {
-    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, ::gc::Error>
-        where D: DataDef<Value = Box<Any>>
-    {
-        panic!()
-    }
-}
-
-impl<'a> GcAllocator<BytecodeFunction> for VMGc<'a> {
-    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, ::gc::Error>
-        where D: DataDef<Value = BytecodeFunction>
-    {
-        panic!()
+        self.allocated_memory += def.size();
+        if self.allocated_memory >= self.collect_limit {
+            self.collect(&mut (roots, &mut def));
+        }
+        self.alloc(def).expect("Allocation")
     }
 }
 
@@ -895,11 +841,14 @@ impl<'a> VM<'a> {
         let global = Global {
             id: id,
             typ: typ,
-            value: Cell::new(Function(self.gc.borrow_mut().alloc(Move(ExternFunction {
-                id: interned_id,
-                args: num_args,
-                function: f,
-            })).expect("Allocation"))),
+            value: Cell::new(Function(self.gc
+                                          .borrow_mut()
+                                          .alloc(Move(ExternFunction {
+                                              id: interned_id,
+                                              args: num_args,
+                                              function: f,
+                                          }))
+                                          .expect("Allocation"))),
         };
         self.names.borrow_mut().insert(id, GlobalFn(self.globals.len()));
         self.globals.push(global);
@@ -1033,16 +982,21 @@ impl<'a> VM<'a> {
     }
 
     pub fn new_data(&self, tag: VMTag, fields: &[Value<'a>]) -> Value<'a> {
-        Data(self.gc.borrow_mut().alloc(Def {
-            tag: tag,
-            elems: fields,
-        }).expect("Allocation"))
+        Data(self.gc
+                 .borrow_mut()
+                 .alloc(Def {
+                     tag: tag,
+                     elems: fields,
+                 })
+                 .expect("Allocation"))
     }
     pub fn new_def<D>(&self, def: D) -> GcPtr<D::Value>
         where D: DataDef,
-              VMGc<'a>: GcAllocator<D::Value>
+              VMGc<'a>: GcAllocator<D::Value, Ptr = GcPtr<D::Value>>
     {
-        self.gc.borrow_mut().alloc(def)
+        self.gc
+            .borrow_mut()
+            .alloc(def)
             .expect("Allocation")
     }
 
@@ -1061,7 +1015,9 @@ impl<'a> VM<'a> {
                    func: GcPtr<BytecodeFunction>,
                    fields: &[Value<'a>])
                    -> GcPtr<ClosureData<'a>> {
-        self.gc.borrow_mut().alloc(ClosureDataDef(func, fields))
+        self.gc
+            .borrow_mut()
+            .alloc(ClosureDataDef(func, fields))
             .expect("Allocation")
     }
     fn new_closure_and_collect(&self,
@@ -1093,7 +1049,7 @@ impl<'a> VM<'a> {
 
     pub fn alloc<D>(&self, stack: &Stack<'a>, def: D) -> GcPtr<D::Value>
         where D: DataDef + Traverseable<VMGc<'a>>,
-              VMGc<'a>: GcAllocator<D::Value>
+              VMGc<'a>: GcAllocator<D::Value, Ptr = GcPtr<D::Value>>
     {
         self.with_roots(stack, |gc, roots| unsafe { gc.alloc_and_collect(roots, def) })
     }
@@ -1783,6 +1739,7 @@ pub fn run_function<'a: 'b, 'b>(vm: &'b VM<'a>, name: &str) -> VMResult<Value<'a
 
 #[cfg(test)]
 mod tests {
+    use gc::GcAllocator;
     use vm::{VM, Value, load_script};
     use vm::Value::{Float, Int};
     use stack::StackFrame;
@@ -2109,7 +2066,7 @@ Int(1)
         let mut vm = VM::new();
         let result = run_expr(&mut vm, text);
         assert_eq!(result,
-                   Value::String(vm.gc.borrow_mut().str_gc.alloc("123")));
+                   Value::String(vm.gc.borrow_mut().alloc("123").expect("Allocation")));
     }
 
     test_expr!{ run_expr_io,

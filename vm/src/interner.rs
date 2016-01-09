@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use base::ast::{AstId, DisplayEnv, IdentEnv, ASTType};
 
-use gc::{GcPtr, Traverseable};
+use gc::{GcPtr, GcAllocator, Traverseable};
 use vm::VMGc;
 use array::Str;
 
@@ -60,7 +60,7 @@ pub struct Interner {
     indexes: HashMap<&'static str, InternedStr>,
 }
 
-impl <G> Traverseable<G> for Interner {
+impl<G> Traverseable<G> for Interner {
     fn traverse(&self, gc: &mut G) {
         for (_, v) in self.indexes.iter() {
             v.0.traverse(gc);
@@ -78,7 +78,7 @@ impl Interner {
             Some(interned_str) => return *interned_str,
             None => (),
         }
-        let gc_str = InternedStr(gc.str_gc.alloc(s));
+        let gc_str = InternedStr(gc.alloc(s).expect("Allocation"));
         // The key will live as long as the value it refers to and the static str never escapes
         // outside interner so this is safe
         let key: &'static str = unsafe { ::std::mem::transmute::<&str, &'static str>(&gc_str) };

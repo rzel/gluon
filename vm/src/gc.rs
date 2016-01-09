@@ -8,6 +8,8 @@ use std::cell::Cell;
 use std::any::Any;
 use std::marker::PhantomData;
 
+use any_ref;
+
 
 #[inline]
 unsafe fn allocate(size: usize) -> *mut u8 {
@@ -85,25 +87,47 @@ impl<'s> WriteOnly<'s, str> {
     }
 }
 
-#[derive(Debug)]
-pub struct Error;
-
-pub trait GcAllocator<T: ?Sized> {
-    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, Error>
-        where D: DataDef<Value = T>,
-              T: for<'a> FromPtr<&'a D>;
+pub struct Error<D> {
+    def: D,
 }
 
-pub trait Gc {
-    ///Unsafe since it calls collects if memory needs to be collected
-    unsafe fn alloc_and_collect<R, D>(&mut self, roots: R, def: D) -> GcPtr<D::Value>
-        where R: Traverseable<Self>,
-              D: DataDef + Traverseable<Self>,
-              Self: GcAllocator<D::Value>;
+impl<D> fmt::Debug for Error<D> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Error")
+    }
+}
 
+pub trait GcBase {
     ///Does a mark and sweep collection by walking from `roots`. This function is unsafe since
     ///roots need to cover all reachable object.
-    unsafe fn collect<R>(&mut self, roots: R) where R: Traverseable<Self>;
+    unsafe fn collect<R>(&mut self, roots: R)
+        where R: Traverseable<Self>,
+              Self: Sized
+    {
+        roots.traverse(self);
+        self.sweep();
+    }
+
+    unsafe fn sweep(&mut self);
+}
+
+pub trait GcAllocator<T: ?Sized>: GcBase {
+    type Ptr;
+    fn alloc<D>(&mut self, def: D) -> Result<Self::Ptr, Error<D>>
+        where D: DataDef<Value = T>,
+              T: for<'a> FromPtr<&'a D>;
+
+    ///Unsafe since it calls collects if memory needs to be collected
+    unsafe fn alloc_and_collect<R, D>(&mut self, roots: R, def: D) -> Self::Ptr
+        where R: Traverseable<Self>,
+              D: DataDef<Value = T> + Traverseable<Self>,
+              T: for<'a> FromPtr<&'a D>,
+              Self: Sized
+    {
+        self.collect(roots);
+        GcAllocator::alloc(self, def)
+            .expect("Allocation")
+    }
 }
 
 #[derive(Debug)]
@@ -111,6 +135,12 @@ pub struct TypedGc<T: ?Sized> {
     values: Option<AllocPtr<T>>,
     allocated_memory: usize,
     collect_limit: usize,
+}
+
+impl<T> Default for TypedGc<T> {
+    fn default() -> TypedGc<T> {
+        TypedGc::new()
+    }
 }
 
 pub unsafe trait FromPtr<D> {
@@ -140,13 +170,6 @@ unsafe impl<T> DataDef for Move<T> {
     }
     fn initialize(self, result: WriteOnly<T>) -> &mut T {
         result.write(self.0)
-    }
-}
-
-impl<G, T> Traverseable<G> for Move<T> where T: Traverseable<G>
-{
-    fn traverse(&self, gc: &mut G) {
-        self.0.traverse(gc);
     }
 }
 
@@ -465,18 +488,55 @@ impl<G, T: ?Sized + HasHeader> Traverseable<G> for GcPtr<T> where T: Traverseabl
     }
 }
 
-impl <T: Any, O: Any> GcAllocator<O> for TypedGc<T> {
-    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, Error>
+
+
+impl<T> GcBase for TypedGc<T> {
+    unsafe fn sweep(&mut self) {
+        TypedGc::sweep(self)
+    }
+}
+
+impl<'a, T: any_ref::Type<'a>, O: any_ref::Type<'a>> GcAllocator<O> for TypedGc<T>
+    where T::Static: Any,
+          O::Static: Any
+{
+    type Ptr = GcPtr<O>;
+    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, Error<D>>
+        where D: DataDef<Value = O>,
+              O: for<'b> FromPtr<&'b D>
+    {
+        if any_ref::type_id::<O>() == any_ref::type_id::<T>() {
+            let gc: &mut TypedGc<O> = unsafe { mem::transmute(self) };
+            Ok(gc.alloc(def))
+        } else {
+            Err(Error { def: def })
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct Cons<H, T>(H, T);
+
+
+impl<H: GcBase, T: GcBase> GcBase for Cons<H, T> {
+    unsafe fn sweep(&mut self) {
+        self.0.sweep();
+        self.1.sweep();
+    }
+}
+
+impl<H, T, O> GcAllocator<O> for Cons<H, T>
+    where H: GcAllocator<O>,
+          T: GcAllocator<O, Ptr = H::Ptr>
+{
+    type Ptr = H::Ptr;
+    fn alloc<D>(&mut self, def: D) -> Result<H::Ptr, Error<D>>
         where D: DataDef<Value = O>,
               O: for<'a> FromPtr<&'a D>
     {
-        use std::any::TypeId;
-        if TypeId::of::<O>() == TypeId::of::<T>() {
-            let ptr: GcPtr<T> = TypedGc::<T>::alloc(self, def);
-            Ok(mem::transmute::<GcPtr<T>, GcPtr<D::Value>>(ptr))
-        } else {
-            Err(Error)
-        }
+        self.0
+            .alloc(def)
+            .or_else(|err| self.1.alloc(err.def))
     }
 }
 
@@ -528,7 +588,6 @@ impl<T> TypedGc<T> {
         self.sweep();
         self.collect_limit = 2 * self.allocated_memory;
     }
-
 
     pub fn object_count(&self) -> usize {
         let mut header: &GcHeader<T> = match self.values {
