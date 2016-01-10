@@ -97,35 +97,69 @@ impl<D> fmt::Debug for Error<D> {
     }
 }
 
-pub trait GcBase {
-    ///Does a mark and sweep collection by walking from `roots`. This function is unsafe since
-    ///roots need to cover all reachable object.
-    unsafe fn collect<R>(&mut self, roots: R)
-        where R: Traverseable<Self>,
-              Self: Sized
-    {
-        roots.traverse(self);
-        self.sweep();
-    }
-
+/// Garbage collected storage
+pub trait Storage {
     unsafe fn sweep(&mut self);
 }
 
-pub trait GcAllocator<T: ?Sized>: GcBase {
+pub trait GcAllocator<T: ?Sized>: Storage {
     type Ptr;
     fn alloc<D>(&mut self, def: D) -> Result<Self::Ptr, Error<D>>
         where D: DataDef<Value = T>,
               T: for<'a> FromPtr<&'a D>;
+}
+
+pub struct Gc<A> {
+    allocated_memory: usize,
+    collect_limit: usize,
+    allocator: A,
+}
+
+impl<A> Gc<A> {
+    pub fn new() -> Gc<A>
+        where A: Default
+    {
+        Gc {
+            allocated_memory: 0,
+            collect_limit: 100,
+            allocator: A::default(),
+        }
+    }
+
+    ///Does a mark and sweep collection by walking from `roots`. This function is unsafe since
+    ///roots need to cover all reachable object.
+    pub unsafe fn collect<R>(&mut self, roots: R)
+        where R: Traverseable<Self>,
+              A: Storage
+    {
+        debug!("Start collect");
+        roots.traverse(self);
+
+        self.allocator.sweep();
+
+        self.collect_limit = 2 * self.allocated_memory;
+    }
+
+    pub fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, ::gc::Error<D>>
+        where D: DataDef,
+              A: GcAllocator<D::Value, Ptr = GcPtr<D::Value>>
+    {
+        self.allocated_memory += def.size();
+        self.allocator.alloc(def)
+    }
 
     ///Unsafe since it calls collects if memory needs to be collected
-    unsafe fn alloc_and_collect<R, D>(&mut self, roots: R, def: D) -> Self::Ptr
+    pub unsafe fn alloc_and_collect<R, D>(&mut self, roots: R, def: D) -> A::Ptr
         where R: Traverseable<Self>,
-              D: DataDef<Value = T> + Traverseable<Self>,
-              T: for<'a> FromPtr<&'a D>,
-              Self: Sized
+              D: DataDef + Traverseable<Self>,
+              A: GcAllocator<D::Value, Ptr = GcPtr<D::Value>>
     {
-        self.collect(roots);
-        GcAllocator::alloc(self, def)
+        self.allocated_memory += def.size();
+        if self.allocated_memory >= self.collect_limit {
+            self.collect((roots, &def));
+        }
+        self.allocator
+            .alloc(def)
             .expect("Allocation")
     }
 }
@@ -133,8 +167,6 @@ pub trait GcAllocator<T: ?Sized>: GcBase {
 #[derive(Debug)]
 pub struct TypedGc<T: ?Sized> {
     values: Option<AllocPtr<T>>,
-    allocated_memory: usize,
-    collect_limit: usize,
 }
 
 impl<T> Default for TypedGc<T> {
@@ -490,7 +522,7 @@ impl<G, T: ?Sized + HasHeader> Traverseable<G> for GcPtr<T> where T: Traverseabl
 
 
 
-impl<T> GcBase for TypedGc<T> {
+impl<T> Storage for TypedGc<T> {
     unsafe fn sweep(&mut self) {
         TypedGc::sweep(self)
     }
@@ -518,7 +550,7 @@ impl<'a, T: any_ref::Type<'a>, O: any_ref::Type<'a>> GcAllocator<O> for TypedGc<
 pub struct Cons<H, T>(H, T);
 
 
-impl<H: GcBase, T: GcBase> GcBase for Cons<H, T> {
+impl<H: Storage, T: Storage> Storage for Cons<H, T> {
     unsafe fn sweep(&mut self) {
         self.0.sweep();
         self.1.sweep();
@@ -542,22 +574,7 @@ impl<H, T, O> GcAllocator<O> for Cons<H, T>
 
 impl<T> TypedGc<T> {
     pub fn new() -> TypedGc<T> {
-        TypedGc {
-            values: None,
-            allocated_memory: 0,
-            collect_limit: 100,
-        }
-    }
-
-    ///Unsafe since it calls collects if memory needs to be collected
-    pub unsafe fn alloc_and_collect<R, D>(&mut self, roots: R, def: D) -> GcPtr<D::Value>
-        where R: Traverseable<Self>,
-              D: DataDef<Value = T> + Traverseable<Self>
-    {
-        if self.allocated_memory >= self.collect_limit {
-            self.collect((roots, &def));
-        }
-        self.alloc(def)
+        TypedGc { values: None }
     }
 
     pub fn alloc<D>(&mut self, def: D) -> GcPtr<D::Value>
@@ -566,7 +583,6 @@ impl<T> TypedGc<T> {
         let size = def.size();
         let mut ptr = AllocPtr::new(size);
         ptr.header.next = self.values.take();
-        self.allocated_memory += ptr.size();
         unsafe {
             let p: *mut D::Value = ptr.value();
             let ret: *const D::Value = &*def.initialize(WriteOnly::new(p));
@@ -586,7 +602,6 @@ impl<T> TypedGc<T> {
         debug!("Start collect");
         roots.traverse(self);
         self.sweep();
-        self.collect_limit = 2 * self.allocated_memory;
     }
 
     pub fn object_count(&self) -> usize {
@@ -635,9 +650,6 @@ impl<T> TypedGc<T> {
     }
 
     fn free(&mut self, header: Option<AllocPtr<T>>) {
-        if let Some(ref ptr) = header {
-            self.allocated_memory -= ptr.size();
-        }
         drop(header);
     }
 }

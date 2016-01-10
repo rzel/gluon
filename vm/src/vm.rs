@@ -17,14 +17,12 @@ use check::Typed;
 use types::*;
 use base::fixed::{FixedMap, FixedVec};
 use interner::{Interner, InternedStr};
-use gc::{TypedGc, GcAllocator, GcPtr, GcTraverseable, GcBase, Traverseable, DataDef, Move,
-         WriteOnly, Cons, FromPtr};
+use gc::{Gc, TypedGc, GcAllocator, GcPtr, GcTraverseable, Traverseable, DataDef, Move, WriteOnly,
+         Cons};
 use array::{Array, Str};
 use compiler::{Compiler, CompiledFunction, Variable, CompilerEnv};
 use api::Pushable;
 use lazy::Lazy;
-
-use any_ref;
 
 use self::Named::*;
 
@@ -453,19 +451,16 @@ impl<'a> Typed for Global<'a> {
     }
 }
 
-#[derive(Debug)]
-pub struct VMGc<'a> {
-    allocated_memory: usize,
-    collect_limit: usize,
-    pub gc: Cons<TypedGc<Str>,
-                 Cons<TypedGc<DataStruct<'a>>,
-                      Cons<TypedGc<ExternFunction<'a>>,
-                           Cons<TypedGc<ClosureData<'a>>,
-                                Cons<TypedGc<PartialApplicationData<'a>>,
-                                     Cons<TypedGc<Box<Any>>,
-                                          Cons<TypedGc<Lazy<'a, Value<'a>>>,
-                                               TypedGc<BytecodeFunction>>>>>>>>,
-}
+pub type VMGc<'a> = Gc<Allocator<'a>>;
+pub type Allocator<'a> = Cons<TypedGc<Str>,
+                              Cons<TypedGc<DataStruct<'a>>,
+                                   Cons<TypedGc<ExternFunction<'a>>,
+                                        Cons<TypedGc<ClosureData<'a>>,
+                                             Cons<TypedGc<PartialApplicationData<'a>>,
+                                                  Cons<TypedGc<Box<Any>>,
+                                                       Cons<TypedGc<Lazy<'a, Value<'a>>>,
+                                                            TypedGc<BytecodeFunction>>>>>>>>;
+
 any_ref!(BytecodeFunction);
 any_ref!(DataStruct<'a>);
 any_ref!(ExternFunction<'a>);
@@ -473,55 +468,6 @@ any_ref!(ClosureData<'a>);
 any_ref!(PartialApplicationData<'a>);
 any_ref!(Lazy<'a, T>);
 any_ref!(Value<'a>);
-
-impl<'a> VMGc<'a> {
-    pub fn new() -> VMGc<'a> {
-        VMGc {
-            allocated_memory: 0,
-            collect_limit: 100,
-            gc: Default::default(),
-        }
-    }
-}
-
-impl<'a> GcBase for VMGc<'a> {
-    unsafe fn collect<R>(&mut self, roots: R)
-        where R: Traverseable<Self>
-    {
-        debug!("Start collect");
-        roots.traverse(self);
-
-        self.gc.sweep();
-
-        self.collect_limit = 2 * self.allocated_memory;
-    }
-    unsafe fn sweep(&mut self) {
-        self.gc.sweep();
-    }
-}
-
-impl<'a, O: any_ref::Type<'a>> GcAllocator<O> for VMGc<'a> where O::Static: Any
-{
-    type Ptr = GcPtr<O>;
-    fn alloc<D>(&mut self, def: D) -> Result<GcPtr<D::Value>, ::gc::Error<D>>
-        where D: DataDef<Value = O>
-    {
-        GcAllocator::alloc(&mut self.gc, def)
-    }
-
-    unsafe fn alloc_and_collect<R, D>(&mut self, roots: R, mut def: D) -> GcPtr<O>
-        where R: Traverseable<Self>,
-              D: DataDef<Value = O> + Traverseable<Self>,
-              O: for<'b> FromPtr<&'b D>,
-              Self: Sized
-    {
-        self.allocated_memory += def.size();
-        if self.allocated_memory >= self.collect_limit {
-            self.collect(&mut (roots, &mut def));
-        }
-        self.alloc(def).expect("Allocation")
-    }
-}
 
 #[derive(Debug)]
 enum Named {
@@ -992,7 +938,7 @@ impl<'a> VM<'a> {
     }
     pub fn new_def<D>(&self, def: D) -> GcPtr<D::Value>
         where D: DataDef,
-              VMGc<'a>: GcAllocator<D::Value, Ptr = GcPtr<D::Value>>
+              Allocator<'a>: GcAllocator<D::Value, Ptr = GcPtr<D::Value>>
     {
         self.gc
             .borrow_mut()
@@ -1033,8 +979,10 @@ impl<'a> VM<'a> {
     {
         // For this to be safe we require that the received stack is the same one that is in this
         // VM
-        assert!(unsafe { stack as *const _  as usize >= &self.stack as *const _ as usize &&
-                stack as *const _ as usize <= (&self.stack as *const _).offset(1) as usize });
+        assert!(unsafe {
+            stack as *const _ as usize >= &self.stack as *const _ as usize &&
+            stack as *const _ as usize <= (&self.stack as *const _).offset(1) as usize
+        });
         let mut interner = self.interner.borrow_mut();
         let roots = Roots {
             globals: &self.globals,
@@ -1049,9 +997,10 @@ impl<'a> VM<'a> {
 
     pub fn alloc<D>(&self, stack: &Stack<'a>, def: D) -> GcPtr<D::Value>
         where D: DataDef + Traverseable<VMGc<'a>>,
-              VMGc<'a>: GcAllocator<D::Value, Ptr = GcPtr<D::Value>>
+              Allocator<'a>: GcAllocator<D::Value, Ptr = GcPtr<D::Value>>
     {
-        self.with_roots(stack, |gc, roots| unsafe { gc.alloc_and_collect(roots, def) })
+        self.with_roots(stack,
+                        |gc, roots| unsafe { gc.alloc_and_collect(roots, def) })
     }
 
     pub fn call_function(&self, args: VMIndex, global: &Global<'a>) -> VMResult<Value<'a>> {
