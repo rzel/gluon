@@ -22,6 +22,8 @@ pub mod kindcheck;
 mod substitution;
 mod rename;
 
+pub use rename::equivalent;
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;

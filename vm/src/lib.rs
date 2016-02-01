@@ -24,3 +24,5 @@ mod lazy;
 #[cfg(all(feature = "check", feature = "parser"))]
 pub mod import;
 mod array;
+#[cfg(feature = "check")]
+mod verify;
