@@ -297,6 +297,8 @@ pub struct Field<Id, T = ArcType<Id>> {
 /// increasing the size of `Type`.
 pub type AppVec<T> = SmallVec<[T; 2]>;
 
+pub type VariantVec<T> = SmallVec<[T; 3]>;
+
 /// The representation of gluon's types.
 ///
 /// For efficency this enum is not stored directly but instead a pointer wrapper which derefs to
@@ -358,8 +360,10 @@ impl<Id, T> Type<Id, T>
         }
     }
 
-    pub fn variants(vs: Vec<(Id, T)>) -> T {
-        T::from(Type::Variants(vs))
+    pub fn variants<I>(vs: I) -> T
+        where I: IntoIterator<Item = (Id, T)>,
+    {
+        T::from(Type::Variants(vs.into_iter().collect()))
     }
 
     pub fn record(types: Vec<Field<Id, Alias<Id, T>>>, fields: Vec<Field<Id, T>>) -> T {
@@ -1184,7 +1188,7 @@ pub fn walk_move_type_opt<F: ?Sized, I, T>(typ: &Type<I, T>, f: &mut F) -> Optio
                   |fields, rest| Type::extend_row(types.clone(), fields, rest))
         }
         Type::Variants(ref variants) => {
-            walk_move_types(Vec::new(),
+            walk_move_types(VariantVec::new(),
                             variants,
                             |v| f.visit(&v.1).map(|t| (v.0.clone(), t)))
                 .map(Type::variants)
