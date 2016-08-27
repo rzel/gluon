@@ -297,7 +297,7 @@ pub struct Field<Id, T = ArcType<Id>> {
 /// increasing the size of `Type`.
 pub type AppVec<T> = SmallVec<[T; 2]>;
 
-pub type VariantVec<T> = SmallVec<[T; 3]>;
+pub type VariantVec<T> = SmallVec<[T; 2]>;
 
 /// The representation of gluon's types.
 ///
