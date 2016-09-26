@@ -16,7 +16,7 @@ before_script:
   export PATH=$HOME/.local/bin:$PATH
 script:
 - |
-  sh ./test-no-skeptic.sh &&
+  sh ./test-no-skeptic.sh && 
   travis-cargo --only nightly test -- --features "test nightly" -p gluon compile_test &&
   travis-cargo --only stable test -- --features "test skeptic" -p gluon --test skeptic-tests &&
   cargo build --release &&
