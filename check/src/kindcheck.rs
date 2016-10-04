@@ -1,7 +1,8 @@
 use std::fmt;
 
 use base::ast;
-use base::types::{self, BuiltinType, Generic, ArcKind, ArcType, Type, Kind, VariantVec, merge};
+use base::types::{self, BuiltinType, Generic, AppVec, ArcKind, ArcType, Type, Kind, VariantVec,
+                  merge};
 use base::symbol::Symbol;
 use base::types::{KindEnv, Walker};
 
@@ -172,7 +173,7 @@ impl<'a> KindCheck<'a> {
             Type::Builtin(builtin_typ) => Ok((self.builtin_kind(builtin_typ), typ.clone())),
             Type::App(ref ctor, ref args) => {
                 let (mut kind, ctor) = try!(self.kindcheck(ctor));
-                let mut new_args = Vec::new();
+                let mut new_args = AppVec::new();
                 for arg in args {
                     let f = Kind::function(self.subs.new_var(), self.subs.new_var());
                     kind = try!(self.unify(&f, kind));

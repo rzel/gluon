@@ -315,7 +315,7 @@ pub enum Type<Id, T = ArcType<Id>> {
     /// A variant type `| A Int Float | B`.
     /// The second element of the tuple is the function type which the constructor has which in the
     /// above example means that A's type is `Int -> Float -> A` and B's is `B`
-    Variants(Vec<(Id, T)>),
+    Variants(VariantVec<(Id, T)>),
     /// Representation for type variables
     Variable(TypeVariable),
     /// Variant for "generic" variables. These occur in signatures as lowercase identifers `a`, `b`
@@ -346,13 +346,10 @@ impl<Id, T> Type<Id, T>
     }
 
     pub fn array(typ: T) -> T {
-        Type::app(Type::builtin(BuiltinType::Array), vec![typ])
+        Type::app(Type::builtin(BuiltinType::Array), collect![typ])
     }
 
-    pub fn app<I>(id: T, args: I) -> T
-        where I: IntoIterator<Item = T>,
-    {
-        let args: AppVec<T> = args.into_iter().collect();
+    pub fn app(id: T, args: AppVec<T>) -> T {
         if args.is_empty() {
             id
         } else {
@@ -360,10 +357,8 @@ impl<Id, T> Type<Id, T>
         }
     }
 
-    pub fn variants<I>(vs: I) -> T
-        where I: IntoIterator<Item = (Id, T)>,
-    {
-        T::from(Type::Variants(vs.into_iter().collect()))
+    pub fn variants(vs: VariantVec<(Id, T)>) -> T {
+        T::from(Type::Variants(vs))
     }
 
     pub fn record(types: Vec<Field<Id, Alias<Id, T>>>, fields: Vec<Field<Id, T>>) -> T {
@@ -403,7 +398,7 @@ impl<Id, T> Type<Id, T>
         args.into_iter()
             .rev()
             .fold(ret,
-                  |body, arg| Type::app(function.clone(), vec![arg, body]))
+                  |body, arg| Type::app(function.clone(), collect![arg, body]))
     }
 
     pub fn generic(typ: Generic<Id>) -> T {
@@ -1167,12 +1162,12 @@ pub fn walk_move_type_opt<F: ?Sized, I, T>(typ: &Type<I, T>, f: &mut F) -> Optio
 {
     match *typ {
         Type::App(ref id, ref args) => {
-            let new_args = walk_move_types(AppVec::new(), args, |t| f.visit(t));
+            let new_args = walk_move_types(args, |t| f.visit(t));
             merge(id, f.visit(id), args, new_args, Type::app)
         }
         Type::Record(ref row) => f.visit(row).map(|row| T::from(Type::Record(row))),
         Type::ExtendRow { ref types, ref fields, ref rest } => {
-            let new_fields = walk_move_types(Vec::new(), fields, |field| {
+            let new_fields = walk_move_types(fields, |field| {
                 f.visit(&field.typ).map(|typ| {
                     Field {
                         name: field.name.clone(),
@@ -1188,9 +1183,7 @@ pub fn walk_move_type_opt<F: ?Sized, I, T>(typ: &Type<I, T>, f: &mut F) -> Optio
                   |fields, rest| Type::extend_row(types.clone(), fields, rest))
         }
         Type::Variants(ref variants) => {
-            walk_move_types(VariantVec::new(),
-                            variants,
-                            |v| f.visit(&v.1).map(|t| (v.0.clone(), t)))
+            walk_move_types(variants, |v| f.visit(&v.1).map(|t| (v.0.clone(), t)))
                 .map(Type::variants)
         }
         Type::Hole |
@@ -1204,12 +1197,13 @@ pub fn walk_move_type_opt<F: ?Sized, I, T>(typ: &Type<I, T>, f: &mut F) -> Optio
 }
 
 // FIXME Add R: Default and remove the `out` parameter
-pub fn walk_move_types<'a, I, F, T, R>(mut out: R, types: I, mut f: F) -> Option<R>
+pub fn walk_move_types<'a, I, F, T, R>(types: I, mut f: F) -> Option<R>
     where I: IntoIterator<Item = &'a T>,
           F: FnMut(&'a T) -> Option<T>,
           T: Clone + 'a,
-          R: VecLike<T>,
+          R: Default + VecLike<T>,
 {
+    let mut out = R::default();
     walk_move_types2(types.into_iter(), false, &mut out, &mut f);
     if out.len() == 0 {
         None

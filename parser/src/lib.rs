@@ -19,7 +19,7 @@ use std::rc::Rc;
 use base::ast::*;
 use base::error::Errors;
 use base::pos::{self, BytePos, Span, Spanned};
-use base::types::{Alias, ArcType, Generic, Field, Kind, Type};
+use base::types::{Alias, AppVec, ArcType, Generic, Field, Kind, Type};
 use base::symbol::{Name, Symbol};
 
 use combine::primitives::{Consumed, Stream, StreamOnce, Error as CombineError, Info,
@@ -266,14 +266,14 @@ impl<'input, I, Id, F> ParserEnv<I, F>
                        many(self.parser(ParserEnv::<I, F>::type_arg)))
             .map(|(_, id, args): (_, _, Vec<_>)| (id, Type::function(args, return_type.clone())));
         many1(variant)
-            .map(|v: Vec<_>| Type::variants(v))
+            .map(Type::variants)
             .parse_stream(input)
     }
 
     fn parse_type(&self, input: I) -> ParseResult<ArcType<Id>, I> {
         (many1(self.parser(ParserEnv::<I, F>::type_arg)),
          optional(token(Token::RightArrow).with(self.typ())))
-            .map(|(mut arg, ret): (Vec<_>, _)| {
+            .map(|(mut arg, ret): (AppVec<_>, _)| {
                 let arg = if arg.len() == 1 {
                     arg.pop().unwrap()
                 } else {
@@ -374,7 +374,7 @@ impl<'input, I, Id, F> ParserEnv<I, F>
 
     fn type_binding(&self, input: I) -> ParseResult<TypeBinding<Id>, I> {
         (self.ident(), many(self.ident()))
-            .then(|(name, args): (Id, Vec<Id>)| {
+            .then(|(name, args): (Id, AppVec<Id>)| {
                 let return_type = if args.is_empty() {
                     Type::ident(name.clone())
                 } else {
@@ -384,7 +384,8 @@ impl<'input, I, Id, F> ParserEnv<I, F>
                                 kind: Kind::variable(0),
                                 id: id.clone(),
                             })
-                        });
+                        })
+                        .collect();
                     Type::app(Type::ident(name.clone()), arg_types)
                 };
                 token(Token::Equal)

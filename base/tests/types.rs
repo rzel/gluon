@@ -1,4 +1,6 @@
 extern crate gluon_base as base;
+#[macro_use]
+extern crate collect_mac;
 
 use std::ops::Deref;
 
@@ -175,8 +177,8 @@ fn show_record_multi_line() {
 #[test]
 fn variants() {
     let typ: ArcType<&str> =
-        Type::variants(vec![("A", Type::function(vec![Type::int()], Type::ident("A"))),
-                            ("B", Type::ident("A"))]);
+        Type::variants(collect![("A", Type::function(vec![Type::int()], Type::ident("A"))),
+                                ("B", Type::ident("A"))]);
     assert_eq_display!(format!("{}", typ), "| A Int | B");
 }
 

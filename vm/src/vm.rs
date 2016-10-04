@@ -7,8 +7,8 @@ use std::usize;
 
 use base::metadata::{Metadata, MetadataEnv};
 use base::symbol::{Name, Symbol, SymbolRef};
-use base::types::{Alias, AliasData, ArcType, Generic, Type, Kind, KindEnv, TypeEnv, PrimitiveEnv,
-                  ArcKind};
+use base::types::{Alias, AliasData, AppVec, ArcType, Generic, Type, Kind, KindEnv, TypeEnv,
+                  PrimitiveEnv, ArcKind};
 use base::fnv::FnvMap;
 
 use macros::MacroEnv;
@@ -419,7 +419,7 @@ impl GlobalVmState {
             Err(Error::TypeAlreadyExists(name.into()))
         } else {
             let id = TypeId::of::<T>();
-            let arg_types: Vec<_> = args.iter().map(|g| self.get_generic(g)).collect();
+            let arg_types: AppVec<_> = args.iter().map(|g| self.get_generic(g)).collect();
             let args = arg_types.iter()
                 .map(|g| match **g {
                     Type::Generic(ref g) => g.clone(),

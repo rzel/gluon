@@ -3,6 +3,8 @@ extern crate gluon_parser as parser;
 extern crate env_logger;
 #[macro_use]
 extern crate log;
+#[macro_use]
+extern crate collect_mac;
 
 mod support;
 
@@ -244,8 +246,8 @@ fn type_decl_record() {
 fn type_mutually_recursive() {
     let _ = ::env_logger::init();
     let e = parse_new!("type Test = | Test Int and Test2 = { x: Int, y: {} } in 1");
-    let test = Type::variants(vec![(intern("Test"),
-                                    Type::function(vec![typ("Int")], typ("Test")))]);
+    let test = Type::variants(collect![(intern("Test"),
+                                        Type::function(vec![typ("Int")], typ("Test")))]);
     let test2 = Type::record(Vec::new(),
                              vec![Field {
                                       name: intern("x"),
@@ -300,13 +302,13 @@ fn op_identifier() {
 fn variant_type() {
     let _ = ::env_logger::init();
     let e = parse_new!("type Option a = | None | Some a in Some 1");
-    let option = Type::app(typ("Option"), vec![typ("a")]);
+    let option = Type::app(typ("Option"), collect![typ("a")]);
     let none = Type::function(vec![], option.clone());
     let some = Type::function(vec![typ("a")], option.clone());
     assert_eq!(e,
                type_decl(intern("Option"),
                          vec![generic("a")],
-                         Type::variants(vec![(intern("None"), none), (intern("Some"), some)]),
+                         Type::variants(collect![(intern("None"), none), (intern("Some"), some)]),
                          app(id("Some"), vec![int(1)])));
 }
 #[test]
@@ -662,7 +664,7 @@ x
                                                     comment: None,
                                                     name: no_loc(Pattern::Ident(TypedIdent::new(intern("x")))),
                                                     typ: Type::app(typ("->"),
-                                                                   vec![typ("Int"), typ("Int")]),
+                                                                   collect![typ("Int"), typ("Int")]),
                                                     args: vec![],
                                                     expr: id("x"),
                                                 }],
@@ -674,9 +676,9 @@ fn quote_in_identifier() {
     let _ = ::env_logger::init();
     let e = parse_new!("let f' = \\x y -> x + y in f' 1 2");
     let a = let_("f'",
-                lambda("",
-                    vec![intern("x"), intern("y")],
-                    binop(id("x"), "+", id("y"))),
-                app(id("f'"), vec![int(1), int(2)]));
+                 lambda("",
+                        vec![intern("x"), intern("y")],
+                        binop(id("x"), "+", id("y"))),
+                 app(id("f'"), vec![int(1), int(2)]));
     assert_eq!(e, a);
 }
